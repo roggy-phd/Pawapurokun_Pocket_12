@@ -20,7 +20,7 @@
 | フォルダ | 内容 |
 |---|---|
 | `password_tool/` | 選手パスワード／QR生成・解析ツール v1.60d（Python／Tkinter） |
-| `rom_patcher/` | ROMパッチ作成ツール v28（Python／Tkinter、標準ライブラリのみ） |
+| `rom_patcher/` | ROMパッチ作成ツール v29（Python／Tkinter、標準ライブラリのみ） |
 | `tools/` | melonDSのステートセーブを解析するチェッカー（パッチの動作確認用） |
 | `docs/` | パスワードのバイト対照表、メモリ上のアドレス一覧、解析メモ、オーペナ検証の結果 |
 
@@ -29,11 +29,11 @@
 - Python 3.8以降（Windowsで確認）
 - パスワードツールのQR出力には `qrcode` / `Pillow` が必要な場合があります（ツールの表示に従ってください）
 
-## ROMパッチ作成ツール（v28）
+## ROMパッチ作成ツール（v29）
 
 ```
-python rom_patcher/PowerPoke12_ThirdPitch_v28.py            # ウィンドウで使う
-python rom_patcher/PowerPoke12_ThirdPitch_v28.py 元.nds 出力.nds [--config sets.json] [オプション]
+python rom_patcher/PowerPoke12_ThirdPitch_v29.py            # ウィンドウで使う
+python rom_patcher/PowerPoke12_ThirdPitch_v29.py 元.nds 出力.nds [--config sets.json] [オプション]
 ```
 
 主な機能（すべて初期値のまま使えます）：
@@ -49,6 +49,8 @@ python rom_patcher/PowerPoke12_ThirdPitch_v28.py 元.nds 出力.nds [--config se
 | アクション野球：サブポジ○のメイン守備バグ修正 | OFF | `--subpos-fix` で有効化 |
 | ペナント：セーブ後にアレンジチームの選手が入れ替わるバグ修正 | ON | `--no-pennant-fix` |
 | アクション野球：オリ変の上方向の変化（ポップするストレート）を解禁 | ON | `--no-pop-unlock` |
+| オーペナ：第三球種を打者の読みで別の球として扱う（試験的） | OFF | `--read-split` で有効化 |
+| オーペナ：打者の読みの番号の食い違いを修正（原作バグ修正、試験的） | OFF | `--read-code-fix` で有効化 |
 
 第三球種の初期セットは、1〜7＝基本5系統の変化球Lv1〜7、E＝ストレートLv7のみ、F＝カットボール／Dカーブ／チェンジアップ／Hシンカー／HシュートLv4＋ストレートLv7です（`--config sets.json` やウィンドウで変更できます）。
 
