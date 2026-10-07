@@ -819,6 +819,10 @@ def gui():
     body=ttk.Frame(_cv); _cv.create_window((0,0),window=body,anchor="nw")
     body.bind("<Configure>",lambda e:_cv.configure(scrollregion=_cv.bbox("all"),width=body.winfo_reqwidth(),height=min(body.winfo_reqheight(),root.winfo_screenheight()-120)))
     root.bind_all("<MouseWheel>",lambda e:_cv.yview_scroll(int(-e.delta/120),"units"))
+    # v31: the wheel must only scroll the window.  ttk Combobox/Spinbox change their value on the wheel, so scrolling
+    # over the set table silently changed pitches and levels (since v30).  Remove those class bindings.
+    for _cls in ("TCombobox","TSpinbox"):
+        for _ev in ("<MouseWheel>","<Button-4>","<Button-5>"): root.unbind_class(_cls,_ev)
     NONE="なし"
     # v31: row 1 of each set = one pitch per category (as before); "＋" adds rows (any pitch type + Lv), "−" removes one
     ALL=[(c,p) for c in range(6) for p in PITCHES[c]]
