@@ -11,7 +11,8 @@ v31 extra pitches (4th+):
   Human:  each press of the same direction: 1st -> 2nd -> extra 1 -> extra 2 -> ... -> 1st.
   CPU:    after the category is chosen, 1st/2nd/extras are drawn by Lv weight (extra i with Li/(L1+L2+sum Lx)).
   個人データ: pitch pages 1-6, 7-12 (if >6), then the extras, 6 per page; page digits for every page.
-  Mini card (Y): per category the highest Lv among the usable extras.
+  Mini card (Y): per category the highest Lv among the usable extras, in fixed columns (slider, curve, fork, sinker,
+  shoot, straight; blank = no usable extra).
   Auto-pennant read (v31, default ON with the read fix; --no-read-sep): an extra is a separate pitch for the batter:
     the history and the judge use 0x20|pitch-type ID, so it is read only from an earlier extra of the same type in
     this at-bat.  Straight-family extras are separate from the straight wait by default (--straight-together: read
@@ -158,6 +159,7 @@ SCX_EDITS=[   # (SC_BLOB offset, original, new) -- the new code is reached throu
     (0x578,bytes.fromhex("8cb4ff01"),"mini card: table literal -> extra table"),
     (0x63C,bytes.fromhex("0690a0e3"),"mini card: row size 6 -> 27"),
     (0x6CC,bytes.fromhex("946084e2"),"mini card: per-category helper -> SCX+8"),
+    (0x6A4,bytes.fromhex("01308be2"),"mini card: digit position = category+1 (fixed columns; was packed)"),
 ]
 
 CATS=["スライダー系","カーブ系","フォーク系","シンカー系","シュート系","ストレート系"]
@@ -693,7 +695,8 @@ def patch_arm9(rom,table,scroll=True,pages=True,log=print,xt=None):
     if xt is not None:   # v31: pages and mini card read the extra lists
         if len(blob)!=SCX-SC_ITCM: raise ValueError("SC_BLOB length changed")
         new_t={0x00C:arm_b(SC_ITCM+0x00C,SCX),0x018:arm_b(SC_ITCM+0x018,SCX+4),0x578:struct.pack("<I",SCX+len(SCX_CODE)),
-               0x63C:bytes.fromhex("1b90a0e3"),0x6CC:arm_b(SC_ITCM+0x6CC,SCX+8)}
+               0x63C:bytes.fromhex("1b90a0e3"),0x6CC:arm_b(SC_ITCM+0x6CC,SCX+8),
+               0x6A4:bytes.fromhex("013089e2")}   # add r3,fp,#1 -> add r3,sb,#1
         for bo,orig,_ in SCX_EDITS:
             if orig is not None and blob[bo:bo+4]!=orig: raise ValueError(f"SC_BLOB +0x{bo:X} not as expected")
             blob[bo:bo+4]=new_t[bo]
