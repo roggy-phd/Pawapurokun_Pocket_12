@@ -20,7 +20,7 @@
 | フォルダ | 内容 |
 |---|---|
 | `password_tool/` | 選手パスワード／QR生成・解析ツール v1.60d（Python／Tkinter） |
-| `rom_patcher/` | ROMパッチ作成ツール v29（Python／Tkinter、標準ライブラリのみ） |
+| `rom_patcher/` | ROMパッチ作成ツール v31（通常版・max版、Python／Tkinter、標準ライブラリのみ） |
 | `tools/` | melonDSのステートセーブを解析するチェッカー（パッチの動作確認用） |
 | `docs/` | パスワードのバイト対照表、メモリ上のアドレス一覧、解析メモ、オーペナ検証の結果 |
 
@@ -29,11 +29,11 @@
 - Python 3.8以降（Windowsで確認）
 - パスワードツールのQR出力には `qrcode` / `Pillow` が必要な場合があります（ツールの表示に従ってください）
 
-## ROMパッチ作成ツール（v29）
+## ROMパッチ作成ツール（v31）
 
 ```
-python rom_patcher/PowerPoke12_ThirdPitch_v29.py            # ウィンドウで使う
-python rom_patcher/PowerPoke12_ThirdPitch_v29.py 元.nds 出力.nds [--config sets.json] [オプション]
+python rom_patcher/PowerPoke12_ThirdPitch_v31.py            # ウィンドウで使う
+python rom_patcher/PowerPoke12_ThirdPitch_v31.py 元.nds 出力.nds [--config sets.json] [オプション]
 ```
 
 主な機能（すべて初期値のまま使えます）：
@@ -42,6 +42,7 @@ python rom_patcher/PowerPoke12_ThirdPitch_v29.py 元.nds 出力.nds [--config se
 |---|---|---|
 | 第三球種（パスワードbyte92の上位4bit＝セット番号1〜15、人間の操作） | 常にON | ― |
 | CPU投手も第三球種を使う（通常試合・オーペナ） | ON | `--no-cpu` |
+| └ オーペナ：CPU投手の第三球種を、打者の読みでも1種類目とは別の球として扱う（上がOFFなら自動でOFF） | ON | `--no-read-split` |
 | 選手能力詳細：特殊能力一覧のスクロール | ON | `--no-scroll` |
 | 選手能力詳細：LRで変化球ページ切替（続き・第三球種）、普通のストレートも表示 | ON | `--no-pages` |
 | 選手能力簡易カード：Yで投法欄⇔第三球種Lv表示、普通のストレートも表示 | ON | `--no-card` |
@@ -49,10 +50,11 @@ python rom_patcher/PowerPoke12_ThirdPitch_v29.py 元.nds 出力.nds [--config se
 | アクション野球：サブポジ○のメイン守備バグ修正 | OFF | `--subpos-fix` で有効化 |
 | ペナント：セーブ後にアレンジチームの選手が入れ替わるバグ修正 | ON | `--no-pennant-fix` |
 | アクション野球：オリ変の上方向の変化（ポップするストレート）を解禁 | ON | `--no-pop-unlock` |
-| オーペナ：第三球種を打者の読みで別の球として扱う（試験的） | OFF | `--read-split` で有効化 |
-| オーペナ：打者の読みの番号の食い違いを修正（原作バグ修正、試験的） | OFF | `--read-code-fix` で有効化 |
+| 打者の読みの修正（原作バグ修正：投球履歴の番号の取り違え＋オーペナのサインバレ） | ON | `--no-read-fix` |
 
 第三球種の初期セットは、1〜7＝基本5系統の変化球Lv1〜7、E＝ストレートLv7のみ、F＝カットボール／Dカーブ／チェンジアップ／Hシンカー／HシュートLv4＋ストレートLv7です（`--config sets.json` やウィンドウで変更できます）。
+
+過去の版（v28・v29）は `rom_patcher/old/` に残しています。
 
 DSi実機（TWiLight Menu++ / nds-bootstrap）でもセーブできるよう、ROMヘッダのCRCを元のROMと同じ値に保っています（詳細は `rom_patcher/CHANGELOG.md` の v26e）。
 
