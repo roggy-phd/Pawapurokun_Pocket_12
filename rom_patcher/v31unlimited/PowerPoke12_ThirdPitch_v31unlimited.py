@@ -30,7 +30,7 @@ Extra pitches (4th+):
     Straight-family extras are separate from the straight wait by default (--straight-together: read as the
     straight).  Replaces the v29 read split.  Action Baseball keeps slot codes.
   Editions: same program; EDITION="normal" (sets as v28-v29) or "max" (set F: every slider/curve/fork/shoot/straight
-  type at Lv7, plain straight included; no sinker).
+  type at Lv7 -- v31unlimited: all 27 pitch types x Lv1-7 in all six categories, 189 entries).
   Config JSON: {"F": {"スライダー系": [["スライダー",7],["Hスライダー",6]], ...}}; the v30 form ["スライダー",7] still loads.
 Python 3.8+, standard library only (tkinter for the window; CLI works without it).
 
@@ -158,7 +158,7 @@ SC_HOOKS=[(0x020574E8,"f84f2de9"),(0x020573E4,"340094e5"),(0x020573E8,"010050e2"
 D1_CODE=bytes.fromhex("f8432de90090a0e344519fe50030d5e5000053e30500000a043095e50120d5e50020c3e50030a0e30030c5e50190a0e320719fe5007097e5000057e33800000a0100d7e50c0050e33500008a060050e33300000a0040a0e1070054e307404422f4209fe5002092e5000052e32c00000a082092e5000052e32900000a1a30d2e52332b0e12600000a013043e20600a0e3930001e0041081e0c0009fe50180d0e7000058e31e00000a046082e2846086e00100d6e5a002b0e11900000a0010d6e5a10280e0a80280e098108fe2b020d1e1012082e2b020c1e1010040e2b51bfbeba80250e10e00002a0000d6e50100c5e5046085e50080c6e50240c5e50100a0e30000c5e50140c7e558108fe2b220d1e1012082e2b220c1e10480c1e50540c1e50190a0e3000059e30600000a24709fe5007097e5000057e30200000a0100d7e5d85dffeb0000c7e5f843bde8001095e51eff2fe184231902440e0d020c0f0d028c2319024c0e0d0200000000000000000000c1e520402de91c501fe59fffffeb2080bde800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
 CODE=bytes.fromhex("0f502de918219fe50030d2e5000053e30a00000a00019fe5000090e50100d0e50210d2e5010050e10400000a040092e50110d2e50010c0e50030a0e30030c2e50f50bde8f0412de90b90feea7e502de90120d1e5c8609fe50030d6e5000053e30900000a043096e50150d6e50050c3e50030a0e30030c6e50240d6e5075084e2050057e10470a0011f0000ea050057e31d00008a075087e2050052e11a00001a78309fe5003093e5000053e31600000a083093e5000053e31300000a1a40d3e52442b0e11000000a014044e20650a0e394050ce007c08ce048509fe50c50d5e7000055e30800000a043083e2873083e00040d3e50140c6e5043086e50050c3e50270c6e50140a0e30040c6e50170c1e50700a0e17e50bde81eff2fe1440e0d020c0f0d02ec7f1402f47f1402")
 # --- v31: 4th and later pitches (machine code assembled from pp12-autosim tools/asm_v31.py) ---
-XT_HDR=6; XT_ENT=50; XT_ROW=XT_HDR+XT_ENT; XT_F_ENT=189; XT_LEN=14*XT_ROW+XT_HDR+XT_F_ENT   # per set: counts[6] + 50 entries (free allocation)
+XT_HDR=6; XT_ENT=50; XT_ROW=XT_HDR+XT_ENT; XT_F_ENT=189; XT_LEN=14*XT_ROW+XT_HDR+XT_F_ENT   # sets 1-E: counts[6] + 50 entries; set F (last row): counts[6] + 189 entries
 OV3X_CODE=bytes.fromhex("000000ea120000ea0f502de930219fe50030d2e5000053e30a00000a18019fe5000090e50100d0e50210d2e5010050e10400000a040092e50110d2e50010c0e50030a0e30030c2e50f50bde8f0412de90990feea7e502de90120d1e5e0609fe50030d6e5000053e30c00000a043096e50150d6e50050c3e50030a0e30030c6e50240d6e5075084e2050057e12600001a0470a0e10320d6e5012082e2060000ea050057e32000008a075087e2050052e11d00001a0740a0e10020a0e37c309fe5003093e5000053e31700000a085093e5000055e31400000a04102de5040085e20410a0e11a30d5e52332a0e1170000eb0120a0e104109de4000050e30a00000a043085e2843083e00050d3e50150c6e5043086e50000c3e50240c6e50320c6e50150a0e30050c6e50470a0e10170c1e50700a0e17e50bde81eff2fe1440e0d020c0f0d02088014020000000000000000000053e32800000a0f0053e32600008a013043e238c0a0e39c0303e090c09fe503308ce0f0402de9814080e00050d4e50160d4e5a5c2b0e11900000aa6c2b0e11700000a0640a0e30070a0e3010057e10300002a07c0d3e70c4084e0017087e2f9ffffea0170d3e7044083e0070052e10b00002a0200d4e7000050e30600000a000052e30200000a050050e1060050110100000a0210a0e1f080bde8012082e2f1ffffea0000a0e3f080bde80000a0e31eff2fe1c8801402")   # ov3 0x02147EC0; the extra table follows the code
 OV10X=0x02192600                               # ov10 dead profiler-string area, after HS_STATE; 0x02192200 jumps to +0
 OV10X_FLAGS=16                                 # +16 u8 straight-together, +17 u8 read identity (0 type, 1 type+Lv), +18 runtime
@@ -858,7 +858,9 @@ def gui():
         return n
     def full(s):
         return sum(used_count(s,c) for c in range(6))>=(XT_F_ENT if s=="F" else XT_ENT)
+    loading=[False]
     def refresh(s):
+        if loading[0]: return
         plus[s].state(["disabled"] if full(s) else ["!disabled"])
     def lv_sync(pitch,level,control,none_value):
         def f(*_):
@@ -873,7 +875,7 @@ def gui():
         row=ttk.Frame(sf); row.pack(anchor="w",pady=1)
         ev=tk.StringVar(value=label or ""); lvv=tk.StringVar(value=str(lv) if label else "0")
         cb=ttk.Combobox(row,textvariable=ev,width=30,state="readonly")
-        def post(cb=cb,ev=ev,s=s):   # only pitch types not yet used in this set/category
+        def post(cb=cb,ev=ev,s=s):   # all pitch types (same type at a different Lv is allowed)
             cb.configure(values=[LABEL[(c,p)] for c,p in ALL])
         cb.configure(postcommand=post); post()
         ttk.Label(row,text="追加",width=6).pack(side="left",padx=(116,0)); cb.pack(side="left")
@@ -905,6 +907,7 @@ def gui():
         plus[s]=ttk.Button(r1,text="＋",width=2,command=lambda s=s:add_extra(s)); plus[s].grid(row=0,column=7,padx=4)
     def set_cfg(cfg):
         for s in SETS:
+            loading[0]=True
             for item in list(extras[s]): item[2].destroy()
             extras[s].clear()
             for c,cat in enumerate(CATS):
@@ -917,6 +920,7 @@ def gui():
                 v=cfg.get(s,{}).get(cat) or []
                 if v and isinstance(v[0],str): v=[v]
                 for name,l in v[1:]: add_extra(s,LABEL[(c,name)],int(l))
+            loading[0]=False
             refresh(s)
     def get_cfg():
         cfg={}
