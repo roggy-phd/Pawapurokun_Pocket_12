@@ -1,28 +1,34 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 r"""
-PowerPoke 12 (VPTJ) — Third Pitch Patcher v31 (v30 + 4th and later pitches: per-category extra lists).
+PowerPoke 12 (VPTJ) — Third Pitch Patcher v31 (final): batter-read bug fixes + 4th and later pitches (extra lists).
 
-v31 extra pitches (4th+):
-  Each set (byte92 upper nibble 1-15) now holds, per category, a LIST of extra pitches, up to the number of pitch
-  types of that category (slider 3, curve 6, fork 9, sinker 2, shoot 3, straight 4): 15 sets x 27 bytes (Lv<<5|type).
+Extra pitches (4th+):
+  Each set (byte92 upper nibble 1-15) holds up to 50 patch entries (the six row-1 cells included), freely distributed
+  over the categories: 15 sets x 56 bytes = 6 per-category counts + 50 entries in category order (Lv<<5|type); the
+  1st entry of a category is its row-1 cell (old third pitch) when that cell is set.  The same pitch type
+  may appear more than once with different Lv; the same type AND Lv twice in a category is rejected.
+  The original pitch (type 15) cannot be an extra.
   Rule B (v28-v29 compatibility): the 1st pitch of each category in a set (row 1 of the window = the old third pitch)
-  is always usable, even if the pitcher already has that pitch type (e.g. sinker Lv7 in a slot + set sinker Lv4).
-  The 2nd and later pitches (rows added with ＋) are skipped when the pitcher already has that pitch type in the 1st
-  or 2nd slot (the type is compared, not the Lv).  The original pitch (type 15) cannot be an extra.
-  Both slots of the category must be filled (as before).
+  is always usable, even if the pitcher already has it.  The 2nd and later pitches are skipped only when they are an
+  exact duplicate (same type AND Lv) of the pitcher's 1st or 2nd slot.  Both slots of the category must be filled.
   Human:  each press of the same direction: 1st -> 2nd -> extra 1 -> extra 2 -> ... -> 1st.
   CPU:    after the category is chosen, 1st/2nd/extras are drawn by Lv weight (extra i with Li/(L1+L2+sum Lx)).
-  個人データ: pitch pages 1-6, 7-12 (if >6), then the extras, 6 per page; page digits for every page.
+          Action Baseball: drawn once per pitch (before the fix it was drawn at the strategy pick 0x021723F4 and again
+          at the decision end 0x02172B64; the second draw is now skipped).
+  個人データ: pitch pages 1-6, 7-12 (if >6), then the extras, 6 per page; page digits 1-7 (row 0x17 is the last
+  visible row), later pages stay reachable with L/R.
   Mini card (Y): per category the highest Lv among the usable extras, in fixed columns (slider, curve, fork, sinker,
   shoot, straight; blank = no usable extra).
-  Auto-pennant read (v31, default ON with the read fix; --no-read-sep): an extra is a separate pitch for the batter:
-    the history and the judge use 0x20|pitch-type ID, so it is read only from an earlier extra of the same type in
-    this at-bat.  An extra of the same type as a slot pitch (rule B, 1st entry) is read as that slot (code c / c+7).  Straight-family extras are separate from the straight wait by default (--straight-together: read
-    as the straight, like the 1st straight slot).  Replaces the v29 read split.  Action Baseball keeps slot codes.
-  Editions: same program; EDITION="normal" (sets as v28-v30) or "max" (set F: every slider/curve/fork/shoot/straight
+  Auto-pennant read (default ON with the read fix; --no-read-sep): an extra is a separate pitch for the batter.
+    Identity (--read-lv / --read-type; GUI checkbox; default: max edition = Lv, normal edition = type):
+      type: an extra of the same TYPE as a slot pitch is read as that slot (code c / c+7); other extras use 0x20|ID
+      Lv  : only the same type AND Lv is the same pitch; other extras use (Lv<<5)|ID (always >= 0x20)
+    Straight-family extras are separate from the straight wait by default (--straight-together: read as the
+    straight).  Replaces the v29 read split.  Action Baseball keeps slot codes.
+  Editions: same program; EDITION="normal" (sets as v28-v29) or "max" (set F: every slider/curve/fork/shoot/straight
   type at Lv7, plain straight included; no sinker).
-  Config JSON: {"F": {"スライダー系": [["スライダー",7],["Hスライダー",7]], ...}}; the v30 form ["スライダー",7] still loads.
+  Config JSON: {"F": {"スライダー系": [["スライダー",7],["Hスライダー",6]], ...}}; the v30 form ["スライダー",7] still loads.
 Python 3.8+, standard library only (tkinter for the window; CLI works without it).
 
 Rule (human pitching only):
@@ -125,7 +131,7 @@ STUB1=0x02147EC0; STUB2=0x02147EC4   # v31: jump table at the start of OV3X_CODE
 # --- Stage D1 (CPU pitching) ---
 OV10_ID=10; OV10_RAM=0x02149D00; OV10_SIZE=0x49800
 D1_HOOK=0x02172B64; D1_HOOK_ORIG=bytes.fromhex("001095e5")
-D1_STUB=0x02192200; D1_DEAD=(0x021921C4,0x02192E12); D1_DIAG=0x02192368; OV10X_DIAG=0x021928E4   # v31
+D1_STUB=0x02192200; D1_DEAD=(0x021921C4,0x02192E12); D1_DIAG=0x02192368; OV10X_DIAG=0x02192948
 D1_HOOK2=0x021723F4; D1_HOOK2_ORIG=bytes.fromhex("0000c1e5")   # end of CPU strategy pick 0x02172308 (also used by auto-pennant sim)
 D1_ENTRY2=0x02192370; D1_T3_OFF=0x18C
 # own copy of the third-pitch table inside the ov10 blob
@@ -149,18 +155,20 @@ SC_HOOKS=[(0x020574E8,"f84f2de9"),(0x020573E4,"340094e5"),(0x020573E8,"010050e2"
 D1_CODE=bytes.fromhex("f8432de90090a0e344519fe50030d5e5000053e30500000a043095e50120d5e50020c3e50030a0e30030c5e50190a0e320719fe5007097e5000057e33800000a0100d7e50c0050e33500008a060050e33300000a0040a0e1070054e307404422f4209fe5002092e5000052e32c00000a082092e5000052e32900000a1a30d2e52332b0e12600000a013043e20600a0e3930001e0041081e0c0009fe50180d0e7000058e31e00000a046082e2846086e00100d6e5a002b0e11900000a0010d6e5a10280e0a80280e098108fe2b020d1e1012082e2b020c1e1010040e2b51bfbeba80250e10e00002a0000d6e50100c5e5046085e50080c6e50240c5e50100a0e30000c5e50140c7e558108fe2b220d1e1012082e2b220c1e10480c1e50540c1e50190a0e3000059e30600000a24709fe5007097e5000057e30200000a0100d7e5d85dffeb0000c7e5f843bde8001095e51eff2fe184231902440e0d020c0f0d028c2319024c0e0d0200000000000000000000c1e520402de91c501fe59fffffeb2080bde800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
 CODE=bytes.fromhex("0f502de918219fe50030d2e5000053e30a00000a00019fe5000090e50100d0e50210d2e5010050e10400000a040092e50110d2e50010c0e50030a0e30030c2e50f50bde8f0412de90b90feea7e502de90120d1e5c8609fe50030d6e5000053e30900000a043096e50150d6e50050c3e50030a0e30030c6e50240d6e5075084e2050057e10470a0011f0000ea050057e31d00008a075087e2050052e11a00001a78309fe5003093e5000053e31600000a083093e5000053e31300000a1a40d3e52442b0e11000000a014044e20650a0e394050ce007c08ce048509fe50c50d5e7000055e30800000a043083e2873083e00040d3e50140c6e5043086e50050c3e50270c6e50140a0e30040c6e50170c1e50700a0e17e50bde81eff2fe1440e0d020c0f0d02ec7f1402f47f1402")
 # --- v31: 4th and later pitches (machine code assembled from pp12-autosim tools/asm_v31.py) ---
-XT_OFF=[0,3,9,18,20,23]; XT_SZ=[3,6,9,2,3,4]; XT_ROW=27; XT_LEN=15*XT_ROW
-OV3X_CODE=bytes.fromhex("000000ea120000ea0f502de930219fe50030d2e5000053e30a00000a18019fe5000090e50100d0e50210d2e5010050e10400000a040092e50110d2e50010c0e50030a0e30030c2e50f50bde8f0412de90990feea7e502de90120d1e5e0609fe50030d6e5000053e30c00000a043096e50150d6e50050c3e50030a0e30030c6e50240d6e5075084e2050057e12600001a0470a0e10320d6e5012082e2060000ea050057e32000008a075087e2050052e11d00001a0740a0e10020a0e37c309fe5003093e5000053e31700000a085093e5000055e31400000a04102de5040085e20410a0e11a30d5e52332a0e1170000eb0120a0e104109de4000050e30a00000a043085e2843083e00050d3e50150c6e5043086e50000c3e50240c6e50320c6e50150a0e30050c6e50470a0e10170c1e50700a0e17e50bde81eff2fe1440e0d020c0f0d02088014020000000000000000000053e32600000a0f0053e32400008a013043e2833083e0833183e090c09fe503308ce0f0402de9814080e00050d4e50160d4e5a5c2b0e11700000aa6c2b0e11500000a1f5005e21f6006e258c09fe50170dce7074083e050c09fe50170dce7070052e10c00002a0200d4e7000050e30700000a1fc000e2000052e30200000a05005ce106005c110100000a0210a0e1f080bde8012082e2f0ffffea0000a0e3f080bde80000a0e31eff2fe1c8801402ce801402d4801402000309121417030609020304")   # ov3 0x02147EC0; the extra table follows the code
+XT_HDR=6; XT_ENT=50; XT_ROW=XT_HDR+XT_ENT; XT_LEN=15*XT_ROW   # per set: counts[6] + 50 entries (free allocation)
+OV3X_CODE=bytes.fromhex("000000ea120000ea0f502de930219fe50030d2e5000053e30a00000a18019fe5000090e50100d0e50210d2e5010050e10400000a040092e50110d2e50010c0e50030a0e30030c2e50f50bde8f0412de90990feea7e502de90120d1e5e0609fe50030d6e5000053e30c00000a043096e50150d6e50050c3e50030a0e30030c6e50240d6e5075084e2050057e12600001a0470a0e10320d6e5012082e2060000ea050057e32000008a075087e2050052e11d00001a0740a0e10020a0e37c309fe5003093e5000053e31700000a085093e5000055e31400000a04102de5040085e20410a0e11a30d5e52332a0e1170000eb0120a0e104109de4000050e30a00000a043085e2843083e00050d3e50150c6e5043086e50000c3e50240c6e50320c6e50150a0e30050c6e50470a0e10170c1e50700a0e17e50bde81eff2fe1440e0d020c0f0d02088014020000000000000000000053e32800000a0f0053e32600008a013043e238c0a0e39c0303e090c09fe503308ce0f0402de9814080e00050d4e50160d4e5a5c2b0e11900000aa6c2b0e11700000a0640a0e30070a0e3010057e10300002a07c0d3e70c4084e0017087e2f9ffffea0170d3e7044083e0070052e10b00002a0200d4e7000050e30600000a000052e30200000a050050e1060050110100000a0210a0e1f080bde8012082e2f1ffffea0000a0e3f080bde80000a0e31eff2fe1c8801402")   # ov3 0x02147EC0; the extra table follows the code
 OV10X=0x02192600                               # ov10 dead profiler-string area, after HS_STATE; 0x02192200 jumps to +0
-OV10X_FLAGS=16                                 # +16 u8: 1 = straight-family extras are read as the straight
-OV10X_CODE=bytes.fromhex("030000eaa00000eaa40000eaa70000ea00000000f8432de908d04de20090a0e3ac529fe50030d5e5000053e30500000a043095e50120d5e50020c3e50030a0e30030c5e50190a0e388729fe5007097e5000057e35400000a0100d7e50c0050e35100008a060050e34f00000a0040a0e1070054e3074044225c629fe5006096e5000056e34800000a086096e5000056e34500000a0080a0e300808de5040086e20410a0e10820a0e11a30d6e52332a0e18d0000eb000050e30400000a00209de5a02282e000208de5018081e2f2ffffea00209de5000052e33300000a021c8fe2b030d1e1013083e2b030c1e1041086e2841081e00000d1e50130d1e5a002a0e1a30280e0020080e0010040e2a91afbeb00209de5020050e12300002a04008de50080a0e3040086e20410a0e10820a0e11a30d6e52332a0e16b0000eb000050e31900000a04209de5a032a0e1030052e10300003a032042e004208de5018081e2efffffea043086e2843083e00020d3e50120c5e5043085e50000c3e50240c5e50310c5e50120a0e30020c5e50140c7e5531f8fe2b220d1e1012082e2b220c1e10400c1e50540c1e50190a0e3000059e30a00000a1c719fe5007097e5000057e30600000a0100d7e5b65cffeb0000c7e50010d5e5000051e3411f8f120600c11508d08de2f843bde8001095e51eff2fe10f402de9dc209fe5002092e50100d2e5cc109fe50030d1e5000053e31c00000a0230d1e5000053e11900001ac0108fe20610d1e500c0d2e501005ce11400001a9c109fe50110d1e594e09fe504e09ee500e0dee50e1021e01f0011e30c00000a7c109fe5041091e50110d1e50e1021e01f0011e3070080020500000a050053e30200001a6c325fe5000053e30000001a20008ce300c0a0e10f80bde804e02de5d6ffffeb04e09de400005ce11eff2fe104e02de5d1ffffeb0c10a0e104f09de410402de9f656ffebccffffeb1c009fe5000090e5040090e5bd0f80e202c0c0e51080bde884231902440e0d020c0f0d02500e0d020000000000000000000053e32600000a0f0053e32400008a013043e2833083e0833183e090c09fe503308ce0f0402de9814080e00050d4e50160d4e5a5c2b0e11700000aa6c2b0e11500000a1f5005e21f6006e258c09fe50170dce7074083e050c09fe50170dce7070052e10c00002a0200d4e7000050e30700000a1fc000e2000052e30200000a05005ce106005c110100000a0210a0e1f080bde8012082e2f0ffffea0000a0e3f080bde80000a0e31eff2fe1a4291902aa291902b0291902000309121417030609020304")  # +0 d1x, +4 rs_sep, +8 rn_r1, +12 hc_sep; extra table after the code
+OV10X_FLAGS=16                                 # +16 u8 straight-together, +17 u8 read identity (0 type, 1 type+Lv), +18 runtime
+OV10X_ENTRY2=20                                # ENTRY2 (0x021723F4 path) enters here; 0x02192200 (0x02172B64 path) enters at +0
+D1_ENTRY2_BL=0x0219237C                        # bl 0x02192200 inside ENTRY2 -> bl OV10X+OV10X_ENTRY2
+OV10X_CODE=bytes.fromhex("0a0000eab90000eabd0000eac00000ea00000000ffffffea03002de914004fe20110a0e30210c0e50300bde80a0000ea03002de92c004fe20210d0e5000051e30400000a0010a0e30210c0e50300bde8001095e51eff2fe10300bde8f8432de908d04de20090a0e3c8529fe50030d5e5000053e30500000a043095e50120d5e50020c3e50030a0e30030c5e50190a0e3a4729fe5007097e5000057e35400000a0100d7e50c0050e35100008a060050e34f00000a0040a0e1070054e30740442278629fe5006096e5000056e34800000a086096e5000056e34500000a0080a0e300808de5040086e20410a0e10820a0e11a30d6e52332a0e1940000eb000050e30400000a00209de5a02282e000208de5018081e2f2ffffea00209de5000052e33300000a871f8fe2b030d1e1013083e2b030c1e1041086e2841081e00000d1e50130d1e5a002a0e1a30280e0020080e0010040e2971afbeb00209de5020050e12300002a04008de50080a0e3040086e20410a0e10820a0e11a30d6e52332a0e1720000eb000050e31900000a04209de5a032a0e1030052e10300003a032042e004208de5018081e2efffffea043086e2843083e00020d3e50120c5e5043085e50000c3e50240c5e50310c5e50120a0e30020c5e50140c7e55a1f8fe2b220d1e1012082e2b220c1e10400c1e50540c1e50190a0e3000059e30a00000a38719fe5007097e5000057e30600000a0100d7e5a45cffeb0000c7e50010d5e5000051e3121e8f120600c11508d08de2f843bde8001095e51eff2fe11f402de9f8209fe5002092e50100d2e5e8109fe50030d1e5000053e32300000a0230d1e5000053e12000001adc108fe20610d1e500c0d2e501005ce11b00001a274e4fe20140d4e5000054e31f40a003ff40a013a4109fe504e091e500e0dee50110d1e50e1021e0040011e10f00000a88109fe5041091e50110d1e50e1021e0040011e1070080020800000a050053e30200001ac4125fe5000051e30300001a1f0054e320008c03e0000e120c00801100c0a0e11f80bde804e02de5cfffffeb04e09de400005ce11eff2fe104e02de5caffffeb0c10a0e104f09de410402de9dd56ffebc5ffffeb1c009fe5000090e5040090e5bd0f80e202c0c0e51080bde884231902440e0d020c0f0d02500e0d020000000000000000000053e32800000a0f0053e32600008a013043e238c0a0e39c0303e090c09fe503308ce0f0402de9814080e00050d4e50160d4e5a5c2b0e11900000aa6c2b0e11700000a0640a0e30070a0e3010057e10300002a07c0d3e70c4084e0017087e2f9ffffea0170d3e7044083e0070052e10b00002a0200d4e7000050e30600000a000052e30200000a050050e1060050110100000a0210a0e1f080bde8012082e2f1ffffea0000a0e3f080bde80000a0e31eff2fe1082a1902")  # +0 d1x, +4 rs_sep, +8 rn_r1, +12 hc_sep; extra table after the code
 SCX=0x01FFAC00+0xA40                           # ITCM, right after SC_BLOB
-SCX_CODE=bytes.fromhex("010000ea3c0000ea9b0000ea6f502de9a8629fe5005096e5015085e2010055e30300001afffdffeb060050e3040000ca0250a0e3260000eb021045e2000051e10600002a005086e50100a0e370129fe5000081e50000a0e3140084e56f90bde80000a0e3000086e50200a0e3140084e56f90bde8f0412de948629fe5006096e50070a0e3000056e30f00000a0040a0e30080a0e3040086e20410a0e10820a0e11a30d6e52332a0e1880000eb000050e30200000a017087e2018081e2f4ffffea014084e2060054e3f0ffffba0700a0e1f081bde802402de9e5ffffeb0010a0e3000050e3020000da060040e2011081e2faffffea0100a0e10280bde8f84f2de910d04de2b4019fe5000090e5020050e3390000ba58b09de5020040e2800080e08000a0e108008de50000a0e30c008de590619fe5006096e5000056e32e00000a0090a0e30080a0e3040086e20910a0e10820a0e11a30d6e52332a0e15b0000eb000050e32100000a018081e20050a0e10c109de5012081e20c208de508209de5020051e1efffff3a062082e2020051e1ecffff2a050054e3eaffffca1f0005e224119fe5091191e78000a0e1b02091e10b2082e000a08de50700a0e10210a0e31330a0e385fcffeba522a0e19c2082e200a08de50700a0e10210a0e31c30a0e37efcffeb02a08ae2014084e2d5ffffea019089e2060059e3d1ffffbac4009fe5000090e5000050e31700000a85fdffeb060050e30150a0c30050a0d3acffffeb0060a0e1060095e10f00000a0b80a0e30190a0e30000a0e32dfeffeb000055e30100000a0100a0e329feffeb0250a0e3000056e30400000a0500a0e124feffeb015085e2016046e2f8ffffea10d08de2f84fbde844d08de21eff2fe1af412de90060a0e30080a0e3940084e20910a0e10820a0e10a30a0e1150000eb000050e30500000ae02000e2e03006e2030052e10060a081018081e2f2ffffeaaf81bde878b4ff0180b4ff01780c0d0220d40a02000053e32600000a0f0053e32400008a013043e2833083e0833183e090c09fe503308ce0f0402de9814080e00050d4e50160d4e5a5c2b0e11700000aa6c2b0e11500000a1f5005e21f6006e258c09fe50170dce7074083e050c09fe50170dce7070052e10c00002a0200d4e7000050e30700000a1fc000e2000052e30200000a05005ce106005c110100000a0210a0e1f080bde8012082e2f0ffffea0000a0e3f080bde80000a0e31eff2fe1c8b9ff01ceb9ff01d4b9ff01000309121417030609020304")    # +0 page L/R, +4 page draw, +8 mini-card helper; extra table after the code
+SCX_CODE=bytes.fromhex("010000ea3c0000eaa00000ea6f502de9bc629fe5005096e5015085e2010055e30300001afffdffeb060050e3040000ca0250a0e3260000eb021045e2000051e10600002a005086e50100a0e384129fe5000081e50000a0e3140084e56f90bde80000a0e3000086e50200a0e3140084e56f90bde8f0412de95c629fe5006096e50070a0e3000056e30f00000a0040a0e30080a0e3040086e20410a0e10820a0e11a30d6e52332a0e1900000eb000050e30200000a017087e2018081e2f4ffffea014084e2060054e3f0ffffba0700a0e1f081bde802402de9e5ffffeb0010a0e3000050e3020000da060040e2011081e2faffffea0100a0e10280bde8f84f2de910d04de2c8019fe5000090e5020050e33c0000ba58b09de5020040e2800080e08000a0e108008de50000a0e30c008de5a4619fe5006096e5000056e33100000a0090a0e30080a0e3040086e20910a0e10820a0e11a30d6e52332a0e1630000eb000050e32400000a018081e20050a0e10c109de5012081e20c208de508209de5020051e1efffff3a062082e2020051e1ecffff2a050054e3eaffffca1f0005e20f0050e338019f050900d0072c119fe5091191e78000a0e1b02091e10b2082e000a08de50700a0e10210a0e31330a0e382fcffeba522a0e19c2082e200a08de50700a0e10210a0e31c30a0e37bfcffeb02a08ae2014084e2d2ffffea019089e2060059e3ceffffbacc009fe5000090e5000050e31900000a82fdffeb060050e30150a0c30050a0d3a9ffffeb0060a0e1060095e11100000a0b80a0e30190a0e30000a0e32afeffeb000055e30100000a0100a0e326feffeb0250a0e3000056e30600000a070059e30400008a0500a0e11ffeffeb015085e2016046e2f6ffffea10d08de2f84fbde844d08de21eff2fe1af412de90060a0e30080a0e3940084e20910a0e10820a0e10a30a0e1180000eb000050e30500000ae02000e2e03006e2030052e10060a081018081e2f2ffffeaaf81bde878b4ff0180b4ff01780c0d0220d40a0228b9ff010306090203040000000053e32800000a0f0053e32600008a013043e238c0a0e39c0303e090c09fe503308ce0f0402de9814080e00050d4e50160d4e5a5c2b0e11900000aa6c2b0e11700000a0640a0e30070a0e3010057e10300002a07c0d3e70c4084e0017087e2f9ffffea0170d3e7044083e0070052e10b00002a0200d4e7000050e30600000a000052e30200000a050050e1060050110100000a0210a0e1f080bde8012082e2f1ffffea0000a0e3f080bde80000a0e31eff2fe1e8b9ff01")    # +0 page L/R, +4 page draw, +8 mini-card helper; extra table after the code
 SCX_EDITS=[   # (SC_BLOB offset, original, new) -- the new code is reached through these
     (0x00C,None,"page L/R  -> SCX+0"),
     (0x018,None,"page draw -> SCX+4"),
     (0x578,bytes.fromhex("8cb4ff01"),"mini card: table literal -> extra table"),
-    (0x63C,bytes.fromhex("0690a0e3"),"mini card: row size 6 -> 27"),
+    (0x63C,bytes.fromhex("0690a0e3"),"mini card: row size 6 -> 56"),
     (0x6CC,bytes.fromhex("946084e2"),"mini card: per-category helper -> SCX+8"),
     (0x6A4,bytes.fromhex("01308be2"),"mini card: digit position = category+1 (fixed columns; was packed)"),
 ]
@@ -174,6 +182,7 @@ PITCHES=[
  ["シュート","Hシュート","シンキングファスト"],
  ["ストレート","ムービングファスト","ツーシーム","超スローボール"],
 ]
+PITCH_CODE_MAP=[{p:(15 if p=="オリジナル" else i) for i,p in enumerate(lst)} for lst in PITCHES]
 SETS="123456789ABCDEF"
 # v28a defaults:
 #   Sets 1-7: basic pitches in the five breaking-ball categories at Lv1-Lv7.
@@ -198,7 +207,7 @@ DEFAULT={
     },
 }
 EDITION="max"   # "max" for the max edition (only the initial sets differ)
-DEFAULT_MAX={**DEFAULT,"F":{CATS[c]:[[p,7] for p in PITCHES[c]] for c in (0,1,2,4,5)}}
+DEFAULT_MAX={**DEFAULT,"F":{CATS[c]:[[p,7] for p in PITCHES[c] if p!="オリジナル"] for c in (0,1,2,4,5)}}
 def default_cfg(edition=None):
     return DEFAULT_MAX if (edition or EDITION)=="max" else DEFAULT
 def cfg_lists(cfg):
@@ -214,19 +223,23 @@ def cfg_lists(cfg):
                 lv=int(lv)
                 if name not in PITCHES[c]: raise ValueError(f"set {s} {cat}: unknown pitch {name}")
                 if not 1<=lv<=7: raise ValueError(f"set {s} {cat}: level must be 1-7")
-                t=PITCHES[c].index(name)
-                if any(t==x for x,_ in lst): raise ValueError(f"set {s} {cat}: {name} appears twice")
+                t=PITCH_CODE_MAP[c][name]
+                if any(t==x and lv==y for x,y in lst): raise ValueError(f"set {s} {cat}: {name} Lv{lv} appears twice")
                 lst.append((t,lv))
-            if len(lst)>XT_SZ[c]: raise ValueError(f"set {s} {cat}: at most {XT_SZ[c]} pitches")
             if lst: out.setdefault(s,{})[c]=lst
+    for s,cats in out.items():
+        n=sum(len(v) for v in cats.values())
+        if n>XT_ENT: raise ValueError(f"set {s}: at most {XT_ENT} patch entries total")
     return out
 def make_xt(cfg):
-    """v31 extra table: 15 sets x 27 bytes (per category XT_SZ[c] bytes at XT_OFF[c])."""
+    """v31 extra table: 15 sets x 56 bytes = 6 per-category counts + 50 entries in category order."""
     t=bytearray(XT_LEN)
     for s,cats in cfg_lists(cfg).items():
-        si=SETS.index(s)
-        for c,lst in cats.items():
-            for k,(ty,lv) in enumerate(lst): t[si*XT_ROW+XT_OFF[c]+k]=(lv<<5)|ty
+        base=SETS.index(s)*XT_ROW; pos=base+XT_HDR
+        for c in range(6):
+            lst=cats.get(c,[])
+            t[base+c]=len(lst)
+            for ty,lv in lst: t[pos]=(lv<<5)|ty; pos+=1
     return bytes(t)
 def u32(b,o): return struct.unpack_from("<I",b,o)[0]
 def arm_b(src,dst,link=False):
@@ -316,7 +329,7 @@ def blz_compress(raw, tries=4096, lazy=True):
     extra=len(raw)-(len(prefix)+enc)
     return prefix+body+b'\xff'*pad+struct.pack('<II',enc|(hdr<<24),extra)
 
-def patch_ov10_cpu(rom,table,log=print,hooks=True,xt=None,together=False):
+def patch_ov10_cpu(rom,table,log=print,hooks=True,xt=None,together=False,read_lv=False):
     """Stage D1: hook the end of each CPU pitch decision (overlay 10)."""
     ovt,ovsz=u32(rom,0x50),u32(rom,0x54)
     ent=next(p for p in range(ovt,ovt+ovsz,32) if u32(rom,p)==OV10_ID)
@@ -336,9 +349,10 @@ def patch_ov10_cpu(rom,table,log=print,hooks=True,xt=None,together=False):
     code=bytearray(D1_CODE); code[D1_T3_OFF:D1_T3_OFF+len(table)]=table
     dec[o(D1_STUB):o(D1_STUB)+len(code)]=code
     if xt is not None:   # v31: the D1 body jumps to the extra-list version
-        x=bytearray(OV10X_CODE); x[OV10X_FLAGS]=1 if together else 0; x+=xt
+        x=bytearray(OV10X_CODE); x[OV10X_FLAGS]=1 if together else 0; x[OV10X_FLAGS+1]=1 if read_lv else 0; x+=xt
         if OV10X<HS_STATE+8 or OV10X+len(x)>D1_DEAD[1]: raise ValueError("ov10 extra code does not fit")
         dec[o(D1_STUB):o(D1_STUB)+4]=arm_b(D1_STUB,OV10X)
+        dec[o(D1_ENTRY2_BL):o(D1_ENTRY2_BL)+4]=arm_b(D1_ENTRY2_BL,OV10X+OV10X_ENTRY2,True)   # one draw per decision (Action CPU)
         dec[o(OV10X):o(OV10X)+len(x)]=x
     new=bytes(dec)
     log("compressing overlay 10 ...")
@@ -698,7 +712,7 @@ def patch_arm9(rom,table,scroll=True,pages=True,log=print,xt=None):
     if xt is not None:   # v31: pages and mini card read the extra lists
         if len(blob)!=SCX-SC_ITCM: raise ValueError("SC_BLOB length changed")
         new_t={0x00C:arm_b(SC_ITCM+0x00C,SCX),0x018:arm_b(SC_ITCM+0x018,SCX+4),0x578:struct.pack("<I",SCX+len(SCX_CODE)),
-               0x63C:bytes.fromhex("1b90a0e3"),0x6CC:arm_b(SC_ITCM+0x6CC,SCX+8),
+               0x63C:bytes.fromhex("3890a0e3"),0x6CC:arm_b(SC_ITCM+0x6CC,SCX+8),
                0x6A4:bytes.fromhex("013089e2")}   # add r3,fp,#1 -> add r3,sb,#1
         for bo,orig,_ in SCX_EDITS:
             if orig is not None and blob[bo:bo+4]!=orig: raise ValueError(f"SC_BLOB +0x{bo:X} not as expected")
@@ -721,7 +735,7 @@ def patch_arm9(rom,table,scroll=True,pages=True,log=print,xt=None):
     struct.pack_into("<H",rom,0x15E,crc16(bytes(rom[:0x15E])))
     return bytes(new)
 
-def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card=True,merge="all",subpos_fix=False,pennant_fix=True,pop_unlock=True,read_split=True,read_code_fix=True,read_sep=True,straight_together=False):
+def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card=True,merge="all",subpos_fix=False,pennant_fix=True,pop_unlock=True,read_split=True,read_code_fix=True,read_sep=True,straight_together=False,read_lv=None):
     if Path(src).resolve()==Path(dst).resolve(): raise ValueError("input and output must differ")
     rom=bytearray(Path(src).read_bytes()); sha=hashlib.sha1(rom).hexdigest()
     orig_hdr_crc=struct.unpack_from("<H",rom,0x15E)[0]   # v26e: 0x757E for the clean ROM
@@ -759,7 +773,8 @@ def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card
     struct.pack_into("<I",rom,fat+fid*8+4,fs+len(comp))
     struct.pack_into("<I",rom,ent+8,len(new)); struct.pack_into("<I",rom,ent+12,0)
     struct.pack_into("<I",rom,ent+28,(info&0xFF000000)|len(comp))
-    d1=patch_ov10_cpu(rom,table,log,xt=xt,together=straight_together) if cpu else None
+    if read_lv is None: read_lv=(EDITION=="max")
+    d1=patch_ov10_cpu(rom,table,log,xt=xt,together=straight_together,read_lv=read_lv) if cpu else None
     a9=patch_arm9(rom,table,scroll,pages,log,xt=xt) if (scroll or pages or card) else None
     cardp=patch_ov10_card(rom,log) if card else None
     if merge not in ("off","upgrade","all"): raise ValueError("merge must be off/upgrade/all")
@@ -788,7 +803,7 @@ def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card
     if ov15final:
         a,b=struct.unpack_from("<II",chk,fat+ov15final[0]*8)
         if blz_decompress(chk[a:b])!=ov15final[1]: Path(dst).unlink(); raise ValueError("ov15 verification failed")
-    if sep: log(f"Auto-pennant read: extras are separate pitches (0x20|ID); straight-family extras {'read as the straight' if straight_together else 'separate too'}")
+    if sep: log(f"Auto-pennant read: extras are separate pitches by {'pitch type + Lv' if read_lv else 'pitch type'}; straight-family extras {'read as the straight' if straight_together else 'separate too'}")
     if rs: log(f"Auto-pennant read split for third pitches: ON (ov15 0x021A7764/0x021A7790 -> ov10 0x{RS_STUB:08X})")
     if hc: log(f"Batter-read fix: ON (history code: ov15 0x021A3904/0x021A4704 + ov3 0x020E4F48 -> 0x{HC_STUB:08X}; no sign stealing: 0x021A705C/0x021A6AB4)")
     if pen:
@@ -806,7 +821,7 @@ def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card
         log(f"ITCM code added (ARM9 0x{u32(chk,0x2C):X} bytes, @0x{SC_ITCM:08X}); ability scroll: {'ON' if scroll else 'OFF'}, pitch pages: {'ON' if pages else 'OFF'}")
     log(f"Created {dst}\nSHA1 {hashlib.sha1(chk).hexdigest()}")
     for s,cats in cfg_lists(cfg).items():
-        row=[f"{CATS[c]}="+"/".join(f"{PITCHES[c][t]}Lv{lv}" for t,lv in lst) for c,lst in sorted(cats.items())]
+        row=[f"{CATS[c]}="+"/".join(f"{next(p for p,code in PITCH_CODE_MAP[c].items() if code==t)}Lv{lv}" for t,lv in lst) for c,lst in sorted(cats.items())]
         log(f"  set {int(s,16)}({s}): "+", ".join(row))
 
 def gui():
@@ -832,17 +847,13 @@ def gui():
     hdr=ttk.Frame(fr); hdr.grid(row=0,column=0,sticky="w")
     ttk.Label(hdr,text="セット\n10進数(16進数)\n(byte92上位)",width=14).grid(row=0,column=0)
     for c,cat in enumerate(CATS): ttk.Label(hdr,text=cat,width=18,anchor="center").grid(row=0,column=1+c)
-    def used(s,c,skip=None):
-        """pitch names of category c already used in set s (row 1 + extra rows), except the widget var skip"""
-        out=set(); pv,_=first[(s,c)]
-        if pv is not skip and pv.get()!=NONE: out.add(pv.get())
+    def used_count(s,c):
+        n=1 if first[(s,c)][0].get()!=NONE else 0
         for ev,_,_ in extras[s]:
-            if ev is skip or ev.get() not in UNLABEL: continue
-            ec,ep=UNLABEL[ev.get()]
-            if ec==c: out.add(ep)
-        return out
+            if ev.get() in UNLABEL and UNLABEL[ev.get()][0]==c: n+=1
+        return n
     def full(s):
-        return all(len(used(s,c))>=XT_SZ[c] for c in range(6))
+        return sum(used_count(s,c) for c in range(6))>=XT_ENT
     def refresh(s):
         plus[s].state(["disabled"] if full(s) else ["!disabled"])
     def lv_sync(pitch,level,control,none_value):
@@ -859,7 +870,7 @@ def gui():
         ev=tk.StringVar(value=label or ""); lvv=tk.StringVar(value=str(lv) if label else "0")
         cb=ttk.Combobox(row,textvariable=ev,width=30,state="readonly")
         def post(cb=cb,ev=ev,s=s):   # only pitch types not yet used in this set/category
-            cb.configure(values=[LABEL[(c,p)] for c,p in ALL if p not in used(s,c,skip=ev)])
+            cb.configure(values=[LABEL[(c,p)] for c,p in ALL])
         cb.configure(postcommand=post); post()
         ttk.Label(row,text="追加",width=6).pack(side="left",padx=(116,0)); cb.pack(side="left")
         sp=ttk.Spinbox(row,textvariable=lvv,from_=0,to=7,width=2); sp.pack(side="left")
@@ -881,7 +892,7 @@ def gui():
             cell=ttk.Frame(r1); cell.grid(row=0,column=1+c,padx=1,pady=1)
             cb=ttk.Combobox(cell,textvariable=pv,width=12,state="readonly"); cb.pack(side="left")
             def post(cb=cb,pv=pv,s=s,c=c):
-                cb.configure(values=[NONE]+[p for p in PITCHES[c] if p not in used(s,c,skip=pv)])
+                cb.configure(values=[NONE]+PITCHES[c])
             cb.configure(postcommand=post)
             spin=ttk.Spinbox(cell,textvariable=lv,from_=0,to=7,width=2); spin.pack(side="left")
             lv_sync(pv,lv,spin,NONE)
@@ -915,7 +926,8 @@ def gui():
                 cfg.setdefault(s,{}).setdefault(CATS[c],[]).append([p,int(lvv.get())])
         return cfg
     ttk.Label(fr,text="※ 1行目の球（従来の第三球種）は、選手がすでに同じ種類の球を持っていても使われます（v29までと同じ）。\n"
-                      "※ ＋で足した球は、選手が1番目・2番目の枠に同じ種類の球を持っていると使われません（Lvは比べません）。\n"
+                      "※ ＋で足した球は、同じ球種でもLvが違えば別エントリとして使えます。同一球種・同一Lvの重複は不可です。\n"
+                      "※ 1セット合計50エントリまで（1行目の第三球種6枠を含む）。系統ごとの配分は自由です。\n"
                       "※ どちらも、その系統の1番目・2番目の枠が両方埋まっているときだけ使われます。",
               justify="left").grid(row=1+len(SETS),column=0,sticky="w",pady=(6,0))
     set_cfg(default_cfg())
@@ -934,22 +946,25 @@ def gui():
         p=filedialog.askopenfilename(filetypes=[("JSON","*.json")])
         if p: set_cfg(json.loads(Path(p).read_text(encoding="utf-8"))); log("loaded "+p)
     def run():
-        try: build(src.get(),dst.get(),get_cfg(),log=log,cpu=cpu_var.get(),scroll=scroll_var.get(),pages=pages_var.get(),card=card_var.get(),merge={"しない":"off","◎と○の統合だけ止める":"upgrade","すべての統合を止める":"all"}[merge_var.get()],subpos_fix=subpos_var.get(),pennant_fix=pen_var.get(),pop_unlock=pop_var.get(),read_split=rs_var.get(),read_code_fix=hc_var.get(),read_sep=sep_var.get(),straight_together=not sepst_var.get()); messagebox.showinfo("完了","パッチ済みROMを作成しました")
+        try: build(src.get(),dst.get(),get_cfg(),log=log,cpu=cpu_var.get(),scroll=scroll_var.get(),pages=pages_var.get(),card=card_var.get(),merge={"しない":"off","◎と○の統合だけ止める":"upgrade","すべての統合を止める":"all"}[merge_var.get()],subpos_fix=subpos_var.get(),pennant_fix=pen_var.get(),pop_unlock=pop_var.get(),read_split=rs_var.get(),read_code_fix=hc_var.get(),read_sep=sep_var.get(),straight_together=not sepst_var.get(),read_lv=lv_var.get()); messagebox.showinfo("完了","パッチ済みROMを作成しました")
         except Exception as e: log("ERROR: "+str(e)); messagebox.showerror("エラー",str(e))
     cpu_var=tk.BooleanVar(value=True); rs_var=tk.BooleanVar(value=False)
     sep_var=tk.BooleanVar(value=True); sepst_var=tk.BooleanVar(value=True); hc_var=tk.BooleanVar(value=True)
+    lv_var=tk.BooleanVar(value=(EDITION=="max"))
     cpu_fr=ttk.Frame(bot); cpu_fr.grid(row=3,column=0,columnspan=3,sticky="w")
     sep_cb=ttk.Checkbutton(cpu_fr,text="└ オーペナ: CPU投手の追加球種（第三球種以降）を、打者の読みでは別の球として扱う",variable=sep_var)
     sepst_cb=ttk.Checkbutton(cpu_fr,text="　└ ストレート系の追加球種も、ストレート待ちでは読まれない別の球にする",variable=sepst_var)
+    lv_cb=ttk.Checkbutton(cpu_fr,text="　└ 同じ球種でもLvが違えば別の球として読む（ロマン。オフなら同じ球種は同じ球）",variable=lv_var)
     rs_cb=ttk.Checkbutton(cpu_fr,text="└ （別の球として扱わない場合）v29の読み分け：1種類目と読まれても Lv比 でしか当たらない",variable=rs_var)
     def _dep(*_):
         on=cpu_var.get()
         sep_cb.state(["!disabled"] if on and hc_var.get() else ["disabled"])
         sepst_cb.state(["!disabled"] if on and hc_var.get() and sep_var.get() else ["disabled"])
+        lv_cb.state(["!disabled"] if on and hc_var.get() and sep_var.get() else ["disabled"])
         rs_cb.state(["!disabled"] if on and not (sep_var.get() and hc_var.get()) else ["disabled"])
     ttk.Checkbutton(cpu_fr,text="CPU投手も追加球種を使う(自動試合進行も含む)",variable=cpu_var,command=_dep).grid(row=0,column=0,sticky="w")
     sep_cb.configure(command=_dep)
-    sep_cb.grid(row=1,column=0,sticky="w",padx=(20,0)); sepst_cb.grid(row=2,column=0,sticky="w",padx=(20,0)); rs_cb.grid(row=3,column=0,sticky="w",padx=(20,0))
+    sep_cb.grid(row=1,column=0,sticky="w",padx=(20,0)); sepst_cb.grid(row=2,column=0,sticky="w",padx=(20,0)); lv_cb.grid(row=3,column=0,sticky="w",padx=(20,0)); rs_cb.grid(row=4,column=0,sticky="w",padx=(20,0))
     scroll_var=tk.BooleanVar(value=True)
     ttk.Checkbutton(bot,text="選手能力詳細画面(下): 特殊能力一覧のスクロール",variable=scroll_var).grid(row=4,column=0,columnspan=3,sticky="w")
     pages_var=tk.BooleanVar(value=True)
@@ -989,6 +1004,8 @@ if __name__=="__main__":
     ap.add_argument("--no-read-split",action="store_true",help="auto-pennant: keep reading a CPU third pitch as the category's 1st pitch (by default it only counts as read with probability L1/(L1+L3))")
     ap.add_argument("--read-split",action="store_true",help=argparse.SUPPRESS)   # v29 test builds: accepted, now the default
     ap.add_argument("--no-read-sep",action="store_true",help="auto-pennant: do not treat extra pitches as separate pitches for the batter read (v29 read split is used instead)")
+    ap.add_argument("--read-lv",dest="read_lv",action="store_const",const=True,default=None,help="auto-pennant: same pitch type at a different Lv is a different pitch (max edition default)")
+    ap.add_argument("--read-type",dest="read_lv",action="store_const",const=False,help="auto-pennant: same pitch type is the same pitch regardless of Lv")
     ap.add_argument("--straight-together",action="store_true",help="auto-pennant: straight-family extras are read by the straight wait (default: separate)")
     ap.add_argument("--edition",choices=["normal","max"],help="initial sets when no --config is given (default: this file's EDITION)")
     ap.add_argument("--no-read-fix",action="store_true",help="keep the retail batter-read bugs (ID/code history mix-up, auto-pennant sign stealing); the fix is ON by default")
@@ -1000,5 +1017,5 @@ if __name__=="__main__":
     ap.add_argument("--scroll",action="store_true",help=argparse.SUPPRESS)
     a=ap.parse_args()
     cfg=json.loads(Path(a.config).read_text(encoding="utf-8")) if a.config else default_cfg(a.edition)
-    try: build(a.input_rom,a.output_rom,cfg,a.force,cpu=not a.no_cpu,scroll=not a.no_scroll,pages=not a.no_pages,card=not a.no_card,merge=a.merge,subpos_fix=a.subpos_fix,pennant_fix=not a.no_pennant_fix,pop_unlock=not a.no_pop_unlock,read_split=not a.no_read_split,read_code_fix=not a.no_read_fix,read_sep=not a.no_read_sep,straight_together=a.straight_together)
+    try: build(a.input_rom,a.output_rom,cfg,a.force,cpu=not a.no_cpu,scroll=not a.no_scroll,pages=not a.no_pages,card=not a.no_card,merge=a.merge,subpos_fix=a.subpos_fix,pennant_fix=not a.no_pennant_fix,pop_unlock=not a.no_pop_unlock,read_split=not a.no_read_split,read_code_fix=not a.no_read_fix,read_sep=not a.no_read_sep,straight_together=a.straight_together,read_lv=a.read_lv)
     except ValueError as e: raise SystemExit(str(e))
