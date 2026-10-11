@@ -739,7 +739,79 @@ def patch_arm9(rom,table,scroll=True,pages=True,log=print,xt=None):
     struct.pack_into("<H",rom,0x15E,crc16(bytes(rom[:0x15E])))
     return bytes(new)
 
-def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card=True,merge="all",subpos_fix=False,pennant_fix=True,pop_unlock=True,read_split=True,read_code_fix=True,read_sep=True,straight_together=False,read_lv=None):
+# Defense arrival termination guard. Original predictor behavior is preserved below the limit.
+DEF_GUARD_HOOK=0x02115CD8
+DEF_GUARD_LIMIT=0x1000
+
+def add_defense_guard(image,log=print):
+    """Append 28 bytes of ARM code (+ alignment), replacing one 4-byte branch."""
+    image=bytearray(image)
+    site=DEF_GUARD_HOOK-OV_RAM
+    def branch(src,dst,cond=14):
+        delta=dst-src-8
+        if delta%4 or not -(1<<25)<=delta<(1<<25):
+            raise ValueError("defense guard branch out of range")
+        return (cond<<28)|0x0A000000|((delta//4)&0xFFFFFF)
+    expected=struct.pack("<I",branch(DEF_GUARD_HOOK,0x02115AE8,11))
+    if image[site:site+4]!=expected:
+        raise ValueError("defense arrival branch not pristine (already patched or wrong ROM)")
+    image.extend(bytes((-len(image))%32))
+    stub=OV_RAM+len(image)
+    code=struct.pack("<7I",
+        branch(stub,0x02115CDC,10), # BGE: original arrival already completed
+        0xE59D0018,               # LDR r0,[sp,#0x18]: existing arrival counter
+        0xE3500A01,               # CMP r0,#0x1000
+        branch(stub+12,0x02115AE8,11),
+        0xE3A00A01,0xE2400001,    # return 0xFFF for a late/unreachable arrival
+        branch(stub+24,0x02115CE0))
+    image[site:site+4]=struct.pack("<I",branch(DEF_GUARD_HOOK,stub))
+    image.extend(code);image.extend(bytes((-len(image))%32))
+    if OV_RAM+len(image)>EXT_LIMIT:
+        raise ValueError("defense guard overlay extension exceeds RAM allocation")
+    log(f"Defense arrival guard: ON (counter limit {DEF_GUARD_LIMIT}, fallback 0xFFF; hook 0x{DEF_GUARD_HOOK:08X} -> 0x{stub:08X}; code 28 bytes)")
+    return bytes(image)
+
+# Capture-prediction allocation safety. These options are independent for diagnosis.
+DEF_PRED_ALLOC_HOOK=0x021329CC
+DEF_PRED_NULL_HOOK=0x021329D0
+
+def add_defense_prediction_safety(image,leak_fix=True,null_guard=True,log=print):
+    image=bytearray(image)
+    def branch(src,dst,cond=14,link=False):
+        delta=dst-src-8
+        if delta%4 or not -(1<<25)<=delta<(1<<25):
+            raise ValueError("defense prediction branch out of range")
+        return (cond<<28)|(0x0B000000 if link else 0x0A000000)|((delta//4)&0xFFFFFF)
+    def append(words):
+        image.extend(struct.pack("<"+"I"*len(words),*words))
+        image.extend(bytes((-len(image))%32))
+    image.extend(bytes((-len(image))%32))
+    if leak_fix:
+        site=DEF_PRED_ALLOC_HOOK-OV_RAM
+        expected=struct.pack("<I",branch(DEF_PRED_ALLOC_HOOK,0x0201B940,link=True))
+        if image[site:site+4]!=expected:raise ValueError("capture prediction allocation site not pristine")
+        stub=OV_RAM+len(image)
+        # sl was loaded with &game-state-pointer at 0x021329C4.
+        # No local stack frame: excluded states jump directly to the original epilogue.
+        append([0xE59A3000,0xE5D33024,0xE3530000,0x13530004,
+                0x13A00000,branch(stub+20,0x021339F0,1),
+                branch(stub+24,0x0201B940)])
+        image[site:site+4]=struct.pack("<I",branch(DEF_PRED_ALLOC_HOOK,stub,link=True))
+        log(f"Defense prediction leak fix: ON (state check before allocation; 0x{DEF_PRED_ALLOC_HOOK:08X} -> 0x{stub:08X})")
+    if null_guard:
+        site=DEF_PRED_NULL_HOOK-OV_RAM
+        if image[site:site+4]!=bytes.fromhex("403f9fe5"):
+            raise ValueError("capture prediction pointer-load site not pristine")
+        stub=OV_RAM+len(image)
+        # Set the shared pointer before testing NULL. On success, continue at original MOV r1,#0.
+        append([0xE59F300C,0xE5830000,0xE3500000,
+                branch(stub+12,0x021339F0,0),branch(stub+16,0x021329D4),0x02147EA8])
+        image[site:site+4]=struct.pack("<I",branch(DEF_PRED_NULL_HOOK,stub))
+        log(f"Defense prediction NULL guard: ON (return 0 without memset; 0x{DEF_PRED_NULL_HOOK:08X} -> 0x{stub:08X})")
+    if OV_RAM+len(image)>EXT_LIMIT:raise ValueError("defense prediction extension exceeds RAM allocation")
+    return bytes(image)
+
+def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card=True,merge="all",subpos_fix=False,pennant_fix=True,pop_unlock=True,read_split=True,read_code_fix=True,read_sep=True,straight_together=False,read_lv=None,defense_guard=True,defense_leak_fix=True,defense_null_guard=True):
     if Path(src).resolve()==Path(dst).resolve(): raise ValueError("input and output must differ")
     rom=bytearray(Path(src).read_bytes()); sha=hashlib.sha1(rom).hexdigest()
     orig_hdr_crc=struct.unpack_from("<H",rom,0x15E)[0]   # v26e: 0x757E for the clean ROM
@@ -768,6 +840,8 @@ def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card
         dec[ao:ao+4]=arm_b(ACT_HC_HOOK[0],HC_STUB,True)
     blob=OV3X_CODE+xt+b"PKP4"   # v31 (v30: CODE+bytes(8)+table+b"PKP3")
     new=bytes(dec)+bytes(OV_BSS)+blob; new+=bytes((-len(new))%32)
+    if defense_guard: new=add_defense_guard(new,log)
+    if defense_leak_fix or defense_null_guard: new=add_defense_prediction_safety(new,defense_leak_fix,defense_null_guard,log)
     if OV_RAM+len(new)>EXT_LIMIT: raise ValueError("extension too large")
     log("compressing overlay 3 ...")
     comp=blz_compress(new)
@@ -954,7 +1028,7 @@ def gui():
         p=filedialog.askopenfilename(filetypes=[("JSON","*.json")])
         if p: set_cfg(json.loads(Path(p).read_text(encoding="utf-8"))); log("loaded "+p)
     def run():
-        try: build(src.get(),dst.get(),get_cfg(),log=log,cpu=cpu_var.get(),scroll=scroll_var.get(),pages=pages_var.get(),card=card_var.get(),merge={"しない":"off","◎と○の統合だけ止める":"upgrade","すべての統合を止める":"all"}[merge_var.get()],subpos_fix=subpos_var.get(),pennant_fix=pen_var.get(),pop_unlock=pop_var.get(),read_split=rs_var.get(),read_code_fix=hc_var.get(),read_sep=sep_var.get(),straight_together=not sepst_var.get(),read_lv=lv_var.get()); messagebox.showinfo("完了","パッチ済みROMを作成しました")
+        try: build(src.get(),dst.get(),get_cfg(),log=log,cpu=cpu_var.get(),scroll=scroll_var.get(),pages=pages_var.get(),card=card_var.get(),merge={"しない":"off","◎と○の統合だけ止める":"upgrade","すべての統合を止める":"all"}[merge_var.get()],subpos_fix=subpos_var.get(),pennant_fix=pen_var.get(),pop_unlock=pop_var.get(),read_split=rs_var.get(),read_code_fix=hc_var.get(),read_sep=sep_var.get(),straight_together=not sepst_var.get(),read_lv=lv_var.get(),defense_guard=defguard_var.get(),defense_leak_fix=defleak_var.get(),defense_null_guard=defnull_var.get()); messagebox.showinfo("完了","パッチ済みROMを作成しました")
         except Exception as e: log("ERROR: "+str(e)); messagebox.showerror("エラー",str(e))
     cpu_var=tk.BooleanVar(value=True); rs_var=tk.BooleanVar(value=False)
     sep_var=tk.BooleanVar(value=True); sepst_var=tk.BooleanVar(value=True); hc_var=tk.BooleanVar(value=True)
@@ -987,6 +1061,12 @@ def gui():
     pen_var=tk.BooleanVar(value=True)
     ttk.Checkbutton(bot,text="ペナント: セーブ後にアレンジチームの選手が入れ替わるバグを修正",variable=pen_var).grid(row=10,column=0,columnspan=3,sticky="w")
     ttk.Checkbutton(bot,text="打者の読みの修正（原作バグ修正: 投球履歴の番号の取り違え＋オーペナのサインバレ）",variable=hc_var,command=_dep).grid(row=11,column=0,columnspan=3,sticky="w")
+    defguard_var=tk.BooleanVar(value=True)
+    defleak_var=tk.BooleanVar(value=True)
+    defnull_var=tk.BooleanVar(value=True)
+    ttk.Checkbutton(bot,text="アクション守備: 到達計算の無限反復を防ぐ",variable=defguard_var).grid(row=12,column=0,columnspan=3,sticky="w")
+    ttk.Checkbutton(bot,text="アクション守備: 捕球予測のメモリ解放漏れを防ぐ",variable=defleak_var).grid(row=13,column=0,columnspan=3,sticky="w")
+    ttk.Checkbutton(bot,text="アクション守備: メモリ確保失敗時の書込みを防ぐ",variable=defnull_var).grid(row=14,column=0,columnspan=3,sticky="w")
     card_var=tk.BooleanVar(value=True)
     ttk.Checkbutton(bot,text="選手能力簡易カード: Yで投法欄⇔追加球種の最高Lv表示を切替",variable=card_var).grid(row=6,column=0,columnspan=3,sticky="w")
     _dep()
@@ -1000,6 +1080,9 @@ def gui():
 if __name__=="__main__":
     if len(sys.argv)==1: gui(); sys.exit()
     ap=argparse.ArgumentParser(); ap.add_argument("input_rom"); ap.add_argument("output_rom")
+    ap.add_argument("--no-defense-guard",action="store_true",help="disable defensive arrival termination guard")
+    ap.add_argument("--no-defense-leak-fix",action="store_true",help="disable capture prediction allocation leak fix")
+    ap.add_argument("--no-defense-null-guard",action="store_true",help="disable capture prediction allocation-failure guard")
     ap.add_argument("--config"); ap.add_argument("--force",action="store_true")
     ap.add_argument("--no-cpu",action="store_true",help="CPU pitchers do not use third pitches")
     ap.add_argument("--no-scroll",action="store_true",help="no special-ability list scroll")
@@ -1025,5 +1108,5 @@ if __name__=="__main__":
     ap.add_argument("--scroll",action="store_true",help=argparse.SUPPRESS)
     a=ap.parse_args()
     cfg=json.loads(Path(a.config).read_text(encoding="utf-8")) if a.config else default_cfg(a.edition)
-    try: build(a.input_rom,a.output_rom,cfg,a.force,cpu=not a.no_cpu,scroll=not a.no_scroll,pages=not a.no_pages,card=not a.no_card,merge=a.merge,subpos_fix=a.subpos_fix,pennant_fix=not a.no_pennant_fix,pop_unlock=not a.no_pop_unlock,read_split=not a.no_read_split,read_code_fix=not a.no_read_fix,read_sep=not a.no_read_sep,straight_together=a.straight_together,read_lv=a.read_lv)
+    try: build(a.input_rom,a.output_rom,cfg,a.force,cpu=not a.no_cpu,scroll=not a.no_scroll,pages=not a.no_pages,card=not a.no_card,merge=a.merge,subpos_fix=a.subpos_fix,pennant_fix=not a.no_pennant_fix,pop_unlock=not a.no_pop_unlock,read_split=not a.no_read_split,read_code_fix=not a.no_read_fix,read_sep=not a.no_read_sep,straight_together=a.straight_together,read_lv=a.read_lv,defense_guard=not a.no_defense_guard,defense_leak_fix=not a.no_defense_leak_fix,defense_null_guard=not a.no_defense_null_guard)
     except ValueError as e: raise SystemExit(str(e))
