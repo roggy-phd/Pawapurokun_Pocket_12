@@ -547,6 +547,48 @@ def _ov_patch(rom,ov_id,ov_ram,ov_size,edits,log,label):
     struct.pack_into("<I",rom,fat+fid*8+4,fs+len(comp))
     struct.pack_into("<I",rom,ent+28,(info&0xFF000000)|len(comp))
     return fid,new
+# Optional auto-pennant relief eligibility (two matching candidate checks).
+# Both UcPSearch and UcMR_AceNum must agree on the season-progress gate.
+# This does NOT remove stamina checks or force a relief substitution.
+PEN_RELIEF_HOOK=0x0217CED0
+PEN_RELIEF_ORIG=bytes.fromhex("2000002a")  # UcPSearch: BHS
+PEN_RELIEF_HOOK_COUNT=0x0217D050
+PEN_RELIEF_ORIG_COUNT=bytes.fromhex("1200002a")  # UcMR_AceNum: BHS (different branch displacement)
+PEN_RELIEF_NOP=bytes.fromhex("0000a0e1")   # ARM MOV r0,r0
+
+def patch_pennant_relief(rom,log=print):
+    """Remove the same top-three starter gate from candidate search AND candidate count."""
+    return _ov_patch(rom,OV10_ID,OV10_RAM,OV10_SIZE,
+                     [(PEN_RELIEF_HOOK,PEN_RELIEF_ORIG,PEN_RELIEF_NOP),
+                      (PEN_RELIEF_HOOK_COUNT,PEN_RELIEF_ORIG_COUNT,PEN_RELIEF_NOP)],
+                     log,"pennant starter relief eligibility (search + count)")
+
+# Optional: allow starter slots 0-5 to use the reliever's >40 fallback in mode 8.
+# This only changes the eligibility gate; it does not force CPU selection.
+PEN_STARTER_FALLBACK_HOOK=0x0217CF00
+PEN_STARTER_FALLBACK_COUNT_HOOK=0x0217D080
+PEN_STARTER_FALLBACK_ORIG=bytes.fromhex("1400003a")  # BLO to 0x0217CF58
+PEN_STARTER_FALLBACK_COUNT_ORIG=bytes.fromhex("0600003a")  # BLO to 0x0217D0A0
+
+def patch_pennant_starter_fallback(rom,log=print):
+    """Remove starter-only rejection, retaining >40 check in both search and count."""
+    return _ov_patch(rom,OV10_ID,OV10_RAM,OV10_SIZE,
+                     [(PEN_STARTER_FALLBACK_HOOK,PEN_STARTER_FALLBACK_ORIG,PEN_RELIEF_NOP),
+                      (PEN_STARTER_FALLBACK_COUNT_HOOK,PEN_STARTER_FALLBACK_COUNT_ORIG,PEN_RELIEF_NOP)],
+                     log,"pennant starter stamina fallback (search + count)")
+
+# Select an eligible starter candidate immediately instead of continuing
+# the scan. This does not protect the next scheduled starter.
+PEN_STARTER_PRIORITY_HOOK=0x0217CF4C
+PEN_STARTER_PRIORITY_ORIG=bytes.fromhex("0100003a")  # BLO 0x0217CF58
+PEN_STARTER_PRIORITY_NEW=bytes.fromhex("060000ea")   # B   0x0217CF6C
+
+def patch_pennant_starter_priority(rom,log=print):
+    """Finalize an eligible starter candidate without scanning later candidates."""
+    return _ov_patch(rom,OV10_ID,OV10_RAM,OV10_SIZE,
+                     [(PEN_STARTER_PRIORITY_HOOK,PEN_STARTER_PRIORITY_ORIG,PEN_STARTER_PRIORITY_NEW)],
+                     log,"pennant immediate starter relief-candidate selection")
+
 def patch_pennant_fix(rom,log=print):
     """v26d: pennant team-swap fix (ov10 helper + ov5 hook). Returns (ov10 result, ov5 result)."""
     r10=_ov_patch(rom,OV10_ID,OV10_RAM,OV10_SIZE,[(PEN_HELPER,None,PEN_HELPER_CODE)],log,"pennant helper")
@@ -807,7 +849,7 @@ def add_defense_prediction_safety(image,leak_fix=True,null_guard=True,log=print)
     if OV_RAM+len(image)>EXT_LIMIT:raise ValueError("defense prediction extension exceeds RAM allocation")
     return bytes(image)
 
-def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card=True,merge="all",subpos_fix=False,pennant_fix=True,pop_unlock=True,read_split=True,read_code_fix=True,read_sep=True,straight_together=False,read_lv=None,defense_guard=True,defense_leak_fix=True,defense_null_guard=True):
+def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card=True,merge="all",subpos_fix=False,pennant_fix=True,pop_unlock=True,read_split=True,read_code_fix=True,read_sep=True,straight_together=False,read_lv=None,defense_guard=True,defense_leak_fix=True,defense_null_guard=True,pennant_relief=False,pennant_starter_fallback=False,pennant_starter_priority=False):
     if Path(src).resolve()==Path(dst).resolve(): raise ValueError("input and output must differ")
     rom=bytearray(Path(src).read_bytes()); sha=hashlib.sha1(rom).hexdigest()
     orig_hdr_crc=struct.unpack_from("<H",rom,0x15E)[0]   # v26e: 0x757E for the clean ROM
@@ -854,6 +896,9 @@ def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card
     if merge not in ("off","upgrade","all"): raise ValueError("merge must be off/upgrade/all")
     m17=patch_ov17_merge(rom,merge,log) if merge!="off" else None
     pen=patch_pennant_fix(rom,log) if pennant_fix else None
+    relief=patch_pennant_relief(rom,log) if pennant_relief else None
+    starter_fallback=patch_pennant_starter_fallback(rom,log) if pennant_starter_fallback else None
+    starter_priority=patch_pennant_starter_priority(rom,log) if pennant_starter_priority else None
     pop=patch_pop_unlock(rom,log) if pop_unlock else None
     if read_split and not cpu:
         log("Auto-pennant read split: skipped (it only applies to CPU third pitches, which are OFF)"); read_split=False
@@ -863,7 +908,7 @@ def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card
     rs=patch_read_split(rom,log) if read_split else None
     hc=patch_read_code_fix(rom,log) if read_code_fix else None
     sep=patch_read_sep(rom,log) if read_sep else None
-    ov10final=(sep[0] if sep else None) or (hc[0] if hc else None) or (rs[0] if rs else None) or pop or (pen[0] if pen else None) or cardp or d1
+    ov10final=(sep[0] if sep else None) or (hc[0] if hc else None) or (rs[0] if rs else None) or pop or (starter_priority[0] if starter_priority else None) or (starter_fallback[0] if starter_fallback else None) or (relief[0] if relief else None) or (pen[0] if pen else None) or cardp or d1
     ov15final=(sep[1] if sep else None) or (hc[1] if hc else None) or (rs[1] if rs else None)
     keep_header_crc(rom,orig_hdr_crc,log)   # v26e
     Path(dst).write_bytes(rom)
@@ -884,6 +929,8 @@ def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card
         a,b=struct.unpack_from("<II",chk,fat+pen[1][0]*8)
         if blz_decompress(chk[a:b])!=pen[1][1]: Path(dst).unlink(); raise ValueError("ov5 verification failed")
         log("Pennant team-swap bug fix: ON (ov5 0x020EDAD4 -> ov10 0x021923F0)")
+    if starter_fallback: log("Auto-pennant starter-only state threshold: OFF (ov10 0x0217CF00 + 0x0217D080 -> NOP; >40 fallback retained)")
+    if relief: log("Auto-pennant starter relief gate: OFF (ov10 0x0217CED0 + 0x0217D050 -> NOP; search + count)")
     if d1 and cpu: log(f"CPU extra pitches: ON (diag @0x{OV10X_DIAG:08X})")
     if cardp: log("Mini card: Y toggles third-pitch Lv display (in place of the pitching form)")
     if m17:
@@ -1020,7 +1067,7 @@ def gui():
         p=filedialog.askopenfilename(filetypes=[("JSON","*.json")])
         if p: set_cfg(json.loads(Path(p).read_text(encoding="utf-8"))); log("loaded "+p)
     def run():
-        try: build(src.get(),dst.get(),get_cfg(),log=log,cpu=cpu_var.get(),scroll=scroll_var.get(),pages=pages_var.get(),card=card_var.get(),merge={"しない":"off","◎と○の統合だけ止める":"upgrade","すべての統合を止める":"all"}[merge_var.get()],subpos_fix=subpos_var.get(),pennant_fix=pen_var.get(),pop_unlock=pop_var.get(),read_split=rs_var.get(),read_code_fix=hc_var.get(),read_sep=sep_var.get(),straight_together=not sepst_var.get(),read_lv=lv_var.get(),defense_guard=defguard_var.get(),defense_leak_fix=defleak_var.get(),defense_null_guard=defnull_var.get()); messagebox.showinfo("完了","パッチ済みROMを作成しました")
+        try: build(src.get(),dst.get(),get_cfg(),log=log,cpu=cpu_var.get(),scroll=scroll_var.get(),pages=pages_var.get(),card=card_var.get(),merge={"しない":"off","◎と○の統合だけ止める":"upgrade","すべての統合を止める":"all"}[merge_var.get()],subpos_fix=subpos_var.get(),pennant_fix=pen_var.get(),pop_unlock=pop_var.get(),read_split=rs_var.get(),read_code_fix=hc_var.get(),read_sep=sep_var.get(),straight_together=not sepst_var.get(),read_lv=lv_var.get(),defense_guard=defguard_var.get(),defense_leak_fix=defleak_var.get(),defense_null_guard=defnull_var.get(),pennant_relief=relief_var.get(),pennant_starter_fallback=starter_fallback_var.get(),pennant_starter_priority=starter_priority_var.get()); messagebox.showinfo("完了","パッチ済みROMを作成しました")
         except Exception as e: log("ERROR: "+str(e)); messagebox.showerror("エラー",str(e))
     cpu_var=tk.BooleanVar(value=True); rs_var=tk.BooleanVar(value=False)
     sep_var=tk.BooleanVar(value=True); sepst_var=tk.BooleanVar(value=True); hc_var=tk.BooleanVar(value=True)
@@ -1050,6 +1097,12 @@ def gui():
     ttk.Checkbutton(bot,text="アクション野球: サブポジ○のメイン守備バグを修正",variable=subpos_var).grid(row=8,column=0,columnspan=3,sticky="w")
     pop_var=tk.BooleanVar(value=True)
     ttk.Checkbutton(bot,text="アクション野球: オリ変の上方向変化を解禁",variable=pop_var).grid(row=9,column=0,columnspan=3,sticky="w")
+    relief_var=tk.BooleanVar(value=False)
+    ttk.Checkbutton(bot,text="オーペナ: 先発上位3枠の救援候補制限を解除（候補探索＋人数計算の2か所）",variable=relief_var).grid(row=15,column=0,columnspan=3,sticky="w")
+    starter_fallback_var=tk.BooleanVar(value=False)
+    ttk.Checkbutton(bot,text="オーペナ: 先発6枠も救援候補の状態値40超判定を使用",variable=starter_fallback_var).grid(row=16,column=0,columnspan=3,sticky="w")
+    starter_priority_var=tk.BooleanVar(value=False)
+    ttk.Checkbutton(bot,text="オーペナ: 先発投手の救援候補即時確定",variable=starter_priority_var).grid(row=17,column=0,columnspan=3,sticky="w")
     pen_var=tk.BooleanVar(value=True)
     ttk.Checkbutton(bot,text="ペナント: セーブ後にアレンジチームの選手が入れ替わるバグを修正",variable=pen_var).grid(row=10,column=0,columnspan=3,sticky="w")
     ttk.Checkbutton(bot,text="打者の読みの修正（原作バグ修正: 投球履歴の番号の取り違え＋オーペナのサインバレ）",variable=hc_var,command=_dep).grid(row=11,column=0,columnspan=3,sticky="w")
@@ -1093,6 +1146,9 @@ if __name__=="__main__":
     ap.add_argument("--edition",choices=["normal","max"],help="initial sets when no --config is given (default: this file's EDITION)")
     ap.add_argument("--no-read-fix",action="store_true",help="keep the retail batter-read bugs (ID/code history mix-up, auto-pennant sign stealing); the fix is ON by default")
     ap.add_argument("--read-code-fix",action="store_true",help=argparse.SUPPRESS)   # v29 flag: accepted, now the default
+    ap.add_argument("--pennant-starter-priority",action="store_true",help="auto-pennant: finalize the first eligible starter relief candidate immediately (default OFF; no next-start protection)")
+    ap.add_argument("--pennant-starter-fallback",action="store_true",help="auto-pennant: let starters use the >40 relief candidate fallback (default OFF)")
+    ap.add_argument("--pennant-relief",action="store_true",help="auto-pennant: remove top-three starter relief candidate gate in search and count (default OFF)")
     ap.add_argument("--no-pennant-fix",action="store_true",help="do not fix the pennant arrange-team swap (fix is ON by default)")
     ap.add_argument("--pennant-fix",action="store_true",help=argparse.SUPPRESS)   # v26d/v26e flag: accepted, now the default
     ap.add_argument("--no-read",action="store_true",help=argparse.SUPPRESS)   # v22-v24 flag: accepted, ignored (feature removed in v25)
@@ -1100,5 +1156,5 @@ if __name__=="__main__":
     ap.add_argument("--scroll",action="store_true",help=argparse.SUPPRESS)
     a=ap.parse_args()
     cfg=json.loads(Path(a.config).read_text(encoding="utf-8")) if a.config else default_cfg(a.edition)
-    try: build(a.input_rom,a.output_rom,cfg,a.force,cpu=not a.no_cpu,scroll=not a.no_scroll,pages=not a.no_pages,card=not a.no_card,merge=a.merge,subpos_fix=a.subpos_fix,pennant_fix=not a.no_pennant_fix,pop_unlock=not a.no_pop_unlock,read_split=not a.no_read_split,read_code_fix=not a.no_read_fix,read_sep=not a.no_read_sep,straight_together=a.straight_together,read_lv=a.read_lv,defense_guard=not a.no_defense_guard,defense_leak_fix=not a.no_defense_leak_fix,defense_null_guard=not a.no_defense_null_guard)
+    try: build(a.input_rom,a.output_rom,cfg,a.force,cpu=not a.no_cpu,scroll=not a.no_scroll,pages=not a.no_pages,card=not a.no_card,merge=a.merge,subpos_fix=a.subpos_fix,pennant_fix=not a.no_pennant_fix,pop_unlock=not a.no_pop_unlock,read_split=not a.no_read_split,read_code_fix=not a.no_read_fix,read_sep=not a.no_read_sep,straight_together=a.straight_together,read_lv=a.read_lv,defense_guard=not a.no_defense_guard,defense_leak_fix=not a.no_defense_leak_fix,defense_null_guard=not a.no_defense_null_guard,pennant_relief=a.pennant_relief,pennant_starter_fallback=a.pennant_starter_fallback,pennant_starter_priority=a.pennant_starter_priority)
     except ValueError as e: raise SystemExit(str(e))
