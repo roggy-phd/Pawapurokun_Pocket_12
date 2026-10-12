@@ -581,7 +581,7 @@ def patch_pennant_starter_fallback(rom,log=print):
 # the scan. This does not protect the next scheduled starter.
 PEN_STARTER_PRIORITY_HOOK=0x0217CF4C
 PEN_STARTER_PRIORITY_ORIG=bytes.fromhex("0100003a")  # BLO 0x0217CF58
-PEN_STARTER_PRIORITY_NEW=bytes.fromhex("060000ea")   # B   0x0217CF6C
+PEN_STARTER_PRIORITY_NEW=bytes.fromhex("0600003a")   # BLO 0x0217CF6C (starter slots only)
 
 def patch_pennant_starter_priority(rom,log=print):
     """Finalize an eligible starter candidate without scanning later candidates."""
