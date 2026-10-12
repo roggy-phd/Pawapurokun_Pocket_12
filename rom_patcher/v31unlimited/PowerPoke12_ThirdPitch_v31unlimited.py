@@ -585,7 +585,7 @@ def patch_pennant_starter_fallback(rom,log=print):
 # the scan. This does not protect the next scheduled starter.
 PEN_STARTER_PRIORITY_HOOK=0x0217CF4C
 PEN_STARTER_PRIORITY_ORIG=bytes.fromhex("0100003a")  # BLO 0x0217CF58
-PEN_STARTER_PRIORITY_NEW=bytes.fromhex("060000ea")   # B   0x0217CF6C
+PEN_STARTER_PRIORITY_NEW=bytes.fromhex("0600003a")   # BLO 0x0217CF6C (starter slots only)
 
 def patch_pennant_starter_priority(rom,log=print):
     """Finalize an eligible starter candidate without scanning later candidates."""
@@ -598,7 +598,11 @@ def patch_pennant_starter_priority(rom,log=print):
 # At Uc runner update entry, skip ALL updates when its record or +4 pointer is NULL.
 # Does NOT repair the missing record or prove its root cause. Missing stat updates possible.
 RUNNER_NULL_HOOK=0x0216D318
-RUNNER_NULL_STUB=0x02192DE4   # unreferenced profiler-string tail, verified spare after maximum 979B pitch table
+RUNNER_NULL_CAVE_ORIG=bytes.fromhex("5f5a31324e47534469737044656e7061760000005f5a3955704173656e43686b760000005f5a395570447365")
+RUNNER_NULL_STUB=0x021921C4   # 60-byte unused HEAD of the dead-string area, ahead of D1_STUB.
+# The tail of the area (0x02192DE4) is NOT usable: the ov10 extension grows with the pitch
+# table (840 / 979 / 985 bytes) and with the 40-byte original-pitch direction guard, so a
+# stub placed there silently overwrites the end of set F.  The head never moves.
 RUNNER_NULL_HOOK_ORIG=bytes.fromhex("f8402de9") # push {r3-r7,lr}
 def patch_runner_null_guard(rom,log=print):
     def b(src,dst,cond=14):
@@ -615,10 +619,56 @@ def patch_runner_null_guard(rom,log=print):
     instructions[1]=0xE59F101C
     blob=struct.pack('<11I',*instructions)
     # Cave must remain within unused dead-string area and never overlap the extra-pitch table.
-    if RUNNER_NULL_STUB+len(blob)>0x02192E12:raise ValueError('stub exceeds dead string region')
+    if RUNNER_NULL_STUB<D1_DEAD[0] or RUNNER_NULL_STUB+len(blob)>D1_STUB:
+        raise ValueError('runner guard stub must stay in the dead-string head, before D1_STUB')
     return _ov_patch(rom,OV10_ID,OV10_RAM,OV10_SIZE,
               [(RUNNER_NULL_HOOK,RUNNER_NULL_HOOK_ORIG,b(RUNNER_NULL_HOOK,RUNNER_NULL_STUB)),
-               (RUNNER_NULL_STUB,None,blob)],log,'runner-record NULL crash containment')
+               (RUNNER_NULL_STUB,RUNNER_NULL_CAVE_ORIG[:len(blob)],blob)],log,'runner-record NULL crash containment')
+
+# Root cause of the DSi Data Abort at 0x0216D364 (RAM dump 2026-10-12).
+# A runner record carries, at +4, a pointer to the object of the pitcher held responsible for
+# that runner; the runner update routine increments a counter through it.  Every way a runner
+# normally reaches base writes that pointer (FourBallCom 0x0217C42C, DeadBallCom 0x0217C4F8,
+# UpDsenChk 0x02179DE8, 0x021644EC), and the slot-move routine copies it (0x0216D01C), so the
+# pointer travels with the runner.  The state-restore routine at 0x0215AB88 is the exception:
+# its final loop restores the base-occupancy byte of all four slots from the saved block
+# (0x0215AC44) and never touches +4 -- the saved block has no field for it.  A slot restored as
+# occupied therefore keeps whatever +4 held, which is NULL if that slot was never used before.
+# The clear routine 0x0216CEFC deliberately leaves +4 alone, so nothing ever repairs it.
+# Fix: after each restored slot, fill +4 with the current pitcher ([0x020D0F0C]+0x0C).  That is
+# the closest correct attribution at restore time and keeps the stat updates working, unlike
+# skipping them.  r1/r2/ip are dead at the hook (reloaded at the top of each iteration) and the
+# return point 0x0215AC48 is a CMP, so clobbering them and the flags is safe.
+RUNNER_OWNER_HOOK=0x0215AC44
+RUNNER_OWNER_HOOK_ORIG=bytes.fromhex("10c0c2e5")   # strb ip,[r2,#0x10]
+RUNNER_OWNER_STUB=0x021925C8   # 56-byte gap between HS_STATE+8 and OV10X
+RUNNER_OWNER_CAVE_ORIG=bytes.fromhex("313353454e5348555f444154415f5368000000005f5a37556344656650745031335345")
+RUNNER_PITCHER_PTR=0x020D0F0C
+
+def patch_runner_owner_fix(rom,log=print):
+    """Restore the responsible-pitcher pointer whenever base occupancy is restored."""
+    def b(src,dst,cond=14):
+        delta=dst-src-8
+        if delta%4 or abs(delta)>=0x2000000: raise ValueError("runner owner branch out of range")
+        return struct.pack("<I",(cond<<28)|0x0A000000|((delta//4)&0xffffff))
+    S=RUNNER_OWNER_STUB
+    blob=struct.pack("<9I",
+        0xE5C2C010,   # strb ip,[r2,#0x10]      the replaced instruction
+        0xE24E1001,   # sub  r1,lr,#1           lr already advanced to index+1
+        0xE59F2018,   # ldr  r2,=0x020D0ED8
+        0xE7921101,   # ldr  r1,[r2,r1,lsl#2]   runner record of this slot
+        0xE59F2014,   # ldr  r2,=0x020D0F0C
+        0xE5922000,   # ldr  r2,[r2]
+        0xE3520000,   # cmp  r2,#0
+        0x1592200C,   # ldrne r2,[r2,#0xC]      current pitcher object
+        0x15812004)   # strne r2,[r1,#4]
+    blob+=b(S+36,RUNNER_OWNER_HOOK+4)
+    blob+=struct.pack("<2I",0x020D0ED8,RUNNER_PITCHER_PTR)
+    if S<HS_STATE+8 or S+len(blob)>OV10X:
+        raise ValueError("runner owner stub must stay between HS_STATE and OV10X")
+    return _ov_patch(rom,OV10_ID,OV10_RAM,OV10_SIZE,
+              [(RUNNER_OWNER_HOOK,RUNNER_OWNER_HOOK_ORIG,b(RUNNER_OWNER_HOOK,S)),
+               (S,RUNNER_OWNER_CAVE_ORIG[:len(blob)],blob)],log,"runner responsible-pitcher restore fix")
 
 def patch_pennant_fix(rom,log=print):
     """v26d: pennant team-swap fix (ov10 helper + ov5 hook). Returns (ov10 result, ov5 result)."""
@@ -880,7 +930,7 @@ def add_defense_prediction_safety(image,leak_fix=True,null_guard=True,log=print)
     if OV_RAM+len(image)>EXT_LIMIT:raise ValueError("defense prediction extension exceeds RAM allocation")
     return bytes(image)
 
-def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card=True,merge="all",subpos_fix=False,pennant_fix=True,pop_unlock=True,read_split=True,read_code_fix=True,read_sep=True,straight_together=False,read_lv=None,defense_guard=True,defense_leak_fix=True,defense_null_guard=True,pennant_relief=False,pennant_starter_fallback=False,pennant_starter_priority=False,runner_null_guard=True):
+def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card=True,merge="all",subpos_fix=False,pennant_fix=True,pop_unlock=True,read_split=True,read_code_fix=True,read_sep=True,straight_together=False,read_lv=None,defense_guard=True,defense_leak_fix=True,defense_null_guard=True,pennant_relief=False,pennant_starter_fallback=False,pennant_starter_priority=False,runner_null_guard=True,runner_owner_fix=True):
     if Path(src).resolve()==Path(dst).resolve(): raise ValueError("input and output must differ")
     rom=bytearray(Path(src).read_bytes()); sha=hashlib.sha1(rom).hexdigest()
     orig_hdr_crc=struct.unpack_from("<H",rom,0x15E)[0]   # v26e: 0x757E for the clean ROM
@@ -940,7 +990,8 @@ def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card
     hc=patch_read_code_fix(rom,log) if read_code_fix else None
     sep=patch_read_sep(rom,log) if read_sep else None
     runnerguard=patch_runner_null_guard(rom,log) if runner_null_guard else None
-    ov10final=(runnerguard if runnerguard else None) or (sep[0] if sep else None) or (hc[0] if hc else None) or (rs[0] if rs else None) or pop or (runnerguard if runnerguard else None) or (starter_priority[0] if starter_priority else None) or (starter_fallback[0] if starter_fallback else None) or (relief[0] if relief else None) or (pen[0] if pen else None) or cardp or d1
+    ownerfix=patch_runner_owner_fix(rom,log) if runner_owner_fix else None
+    ov10final=(ownerfix if ownerfix else None) or (runnerguard if runnerguard else None) or (sep[0] if sep else None) or (hc[0] if hc else None) or (rs[0] if rs else None) or pop or (runnerguard if runnerguard else None) or (starter_priority[0] if starter_priority else None) or (starter_fallback[0] if starter_fallback else None) or (relief[0] if relief else None) or (pen[0] if pen else None) or cardp or d1
     ov15final=(sep[1] if sep else None) or (hc[1] if hc else None) or (rs[1] if rs else None)
     keep_header_crc(rom,orig_hdr_crc,log)   # v26e
     Path(dst).write_bytes(rom)
@@ -1103,7 +1154,7 @@ def gui():
         p=filedialog.askopenfilename(filetypes=[("JSON","*.json")])
         if p: set_cfg(json.loads(Path(p).read_text(encoding="utf-8"))); log("loaded "+p)
     def run():
-        try: build(src.get(),dst.get(),get_cfg(),log=log,cpu=cpu_var.get(),scroll=scroll_var.get(),pages=pages_var.get(),card=card_var.get(),merge={"しない":"off","◎と○の統合だけ止める":"upgrade","すべての統合を止める":"all"}[merge_var.get()],subpos_fix=subpos_var.get(),pennant_fix=pen_var.get(),pop_unlock=pop_var.get(),read_split=rs_var.get(),read_code_fix=hc_var.get(),read_sep=sep_var.get(),straight_together=not sepst_var.get(),read_lv=lv_var.get(),defense_guard=defguard_var.get(),defense_leak_fix=defleak_var.get(),defense_null_guard=defnull_var.get(),pennant_relief=relief_var.get(),pennant_starter_fallback=starter_fallback_var.get(),pennant_starter_priority=starter_priority_var.get(),runner_null_guard=runner_null_var.get()); messagebox.showinfo("完了","パッチ済みROMを作成しました")
+        try: build(src.get(),dst.get(),get_cfg(),log=log,cpu=cpu_var.get(),scroll=scroll_var.get(),pages=pages_var.get(),card=card_var.get(),merge={"しない":"off","◎と○の統合だけ止める":"upgrade","すべての統合を止める":"all"}[merge_var.get()],subpos_fix=subpos_var.get(),pennant_fix=pen_var.get(),pop_unlock=pop_var.get(),read_split=rs_var.get(),read_code_fix=hc_var.get(),read_sep=sep_var.get(),straight_together=not sepst_var.get(),read_lv=lv_var.get(),defense_guard=defguard_var.get(),defense_leak_fix=defleak_var.get(),defense_null_guard=defnull_var.get(),pennant_relief=relief_var.get(),pennant_starter_fallback=starter_fallback_var.get(),pennant_starter_priority=starter_priority_var.get(),runner_null_guard=runner_null_var.get(),runner_owner_fix=runner_owner_var.get()); messagebox.showinfo("完了","パッチ済みROMを作成しました")
         except Exception as e: log("ERROR: "+str(e)); messagebox.showerror("エラー",str(e))
     cpu_var=tk.BooleanVar(value=True); rs_var=tk.BooleanVar(value=False)
     sep_var=tk.BooleanVar(value=True); sepst_var=tk.BooleanVar(value=True); hc_var=tk.BooleanVar(value=True)
@@ -1139,8 +1190,10 @@ def gui():
     ttk.Checkbutton(bot,text="オーペナ: 先発6枠も救援候補の状態値40超判定を使用",variable=starter_fallback_var).grid(row=16,column=0,columnspan=3,sticky="w")
     starter_priority_var=tk.BooleanVar(value=False)
     ttk.Checkbutton(bot,text="オーペナ: 先発投手の救援候補即時確定",variable=starter_priority_var).grid(row=17,column=0,columnspan=3,sticky="w")
+    runner_owner_var=tk.BooleanVar(value=True)
     runner_null_var=tk.BooleanVar(value=True)
     ttk.Checkbutton(bot,text="アクション野球: 走者記録NULL参照クラッシュ対策",variable=runner_null_var).grid(row=20,column=0,columnspan=3,sticky="w")
+    ttk.Checkbutton(bot,text="オーペナ/試合: 走者の責任投手が失われるバグを修正（状態復元時に現在の投手を設定）",variable=runner_owner_var).grid(row=21,column=0,columnspan=3,sticky="w")
     pen_var=tk.BooleanVar(value=True)
     ttk.Checkbutton(bot,text="ペナント: セーブ後にアレンジチームの選手が入れ替わるバグを修正",variable=pen_var).grid(row=10,column=0,columnspan=3,sticky="w")
     ttk.Checkbutton(bot,text="打者の読みの修正（原作バグ修正: 投球履歴の番号の取り違え＋オーペナのサインバレ）",variable=hc_var,command=_dep).grid(row=11,column=0,columnspan=3,sticky="w")
@@ -1184,6 +1237,7 @@ if __name__=="__main__":
     ap.add_argument("--edition",choices=["normal","max"],help="initial sets when no --config is given (default: this file's EDITION)")
     ap.add_argument("--no-read-fix",action="store_true",help="keep the retail batter-read bugs (ID/code history mix-up, auto-pennant sign stealing); the fix is ON by default")
     ap.add_argument("--read-code-fix",action="store_true",help=argparse.SUPPRESS)   # v29 flag: accepted, now the default
+    ap.add_argument("--no-runner-owner-fix",action="store_true",help="disable the responsible-pitcher restore fix (default ON)")
     ap.add_argument("--no-runner-null-guard",action="store_true",help="disable runner-record NULL guard (default ON)")
     ap.add_argument("--pennant-starter-priority",action="store_true",help="auto-pennant: finalize the first eligible starter relief candidate immediately (default OFF; no next-start protection)")
     ap.add_argument("--pennant-starter-fallback",action="store_true",help="auto-pennant: let starters use the >40 relief candidate fallback (default OFF)")
@@ -1195,5 +1249,5 @@ if __name__=="__main__":
     ap.add_argument("--scroll",action="store_true",help=argparse.SUPPRESS)
     a=ap.parse_args()
     cfg=json.loads(Path(a.config).read_text(encoding="utf-8")) if a.config else default_cfg(a.edition)
-    try: build(a.input_rom,a.output_rom,cfg,a.force,cpu=not a.no_cpu,scroll=not a.no_scroll,pages=not a.no_pages,card=not a.no_card,merge=a.merge,subpos_fix=a.subpos_fix,pennant_fix=not a.no_pennant_fix,pop_unlock=not a.no_pop_unlock,read_split=not a.no_read_split,read_code_fix=not a.no_read_fix,read_sep=not a.no_read_sep,straight_together=a.straight_together,read_lv=a.read_lv,defense_guard=not a.no_defense_guard,defense_leak_fix=not a.no_defense_leak_fix,defense_null_guard=not a.no_defense_null_guard,pennant_relief=a.pennant_relief,pennant_starter_fallback=a.pennant_starter_fallback,pennant_starter_priority=a.pennant_starter_priority,runner_null_guard=not a.no_runner_null_guard)
+    try: build(a.input_rom,a.output_rom,cfg,a.force,cpu=not a.no_cpu,scroll=not a.no_scroll,pages=not a.no_pages,card=not a.no_card,merge=a.merge,subpos_fix=a.subpos_fix,pennant_fix=not a.no_pennant_fix,pop_unlock=not a.no_pop_unlock,read_split=not a.no_read_split,read_code_fix=not a.no_read_fix,read_sep=not a.no_read_sep,straight_together=a.straight_together,read_lv=a.read_lv,defense_guard=not a.no_defense_guard,defense_leak_fix=not a.no_defense_leak_fix,defense_null_guard=not a.no_defense_null_guard,pennant_relief=a.pennant_relief,pennant_starter_fallback=a.pennant_starter_fallback,pennant_starter_priority=a.pennant_starter_priority,runner_null_guard=not a.no_runner_null_guard,runner_owner_fix=not a.no_runner_owner_fix)
     except ValueError as e: raise SystemExit(str(e))
