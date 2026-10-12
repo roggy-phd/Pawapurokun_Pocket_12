@@ -650,6 +650,33 @@ def patch_pennant_starter_priority(rom,log=print):
                      [(PEN_STARTER_PRIORITY_HOOK,PEN_STARTER_PRIORITY_ORIG,PEN_STARTER_PRIORITY_NEW)],
                      log,"pennant immediate starter relief-candidate selection")
 
+
+# Crash containment based on a real DSi Data Abort (RAM dump 2026-10-12).
+# At Uc runner update entry, skip ALL updates when its record or +4 pointer is NULL.
+# Does NOT repair the missing record or prove its root cause. Missing stat updates possible.
+RUNNER_NULL_HOOK=0x0216D318
+RUNNER_NULL_STUB=0x02192DE4   # unreferenced profiler-string tail, verified spare after maximum 979B pitch table
+RUNNER_NULL_HOOK_ORIG=bytes.fromhex("f8402de9") # push {r3-r7,lr}
+def patch_runner_null_guard(rom,log=print):
+    def b(src,dst,cond=14):
+        displacement=dst-src-8
+        if displacement%4 or abs(displacement)>=0x2000000: raise ValueError('branch out of range')
+        return struct.pack('<I',(cond<<28)|0x0A000000|((displacement//4)&0xffffff))
+    # PUSH {r1-r3,lr}; LDR r1, literal; LDR r1,[r1,r0,lsl#2]
+    # CMP r1,#0; LDRNE r1,[r1,#4]; CMPNE r1,#0; POP {r1-r3,lr}
+    # BXEQ lr; original PUSH {r3-r7,lr}; B 0x0216D31C; literal
+    instructions=[0xE92D400E,0xE59F1024,0xE7911100,0xE3510000,
+                  0x15911004,0x13510000,0xE8BD400E,0x012FFF1E,
+                  0xE92D40F8,struct.unpack('<I',b(RUNNER_NULL_STUB+36,0x0216D31C))[0],0x020D0ED8]
+    # LDR literal at stub+40: PC=stub+4+8 -> offset 28, not 36
+    instructions[1]=0xE59F101C
+    blob=struct.pack('<11I',*instructions)
+    # Cave must remain within unused dead-string area and never overlap the extra-pitch table.
+    if RUNNER_NULL_STUB+len(blob)>0x02192E12:raise ValueError('stub exceeds dead string region')
+    return _ov_patch(rom,OV10_ID,OV10_RAM,OV10_SIZE,
+              [(RUNNER_NULL_HOOK,RUNNER_NULL_HOOK_ORIG,b(RUNNER_NULL_HOOK,RUNNER_NULL_STUB)),
+               (RUNNER_NULL_STUB,None,blob)],log,'runner-record NULL crash containment')
+
 def patch_pennant_fix(rom,log=print):
     """v26d: pennant team-swap fix (ov10 helper + ov5 hook). Returns (ov10 result, ov5 result)."""
     r10=_ov_patch(rom,OV10_ID,OV10_RAM,OV10_SIZE,[(PEN_HELPER,None,PEN_HELPER_CODE)],log,"pennant helper")
@@ -911,7 +938,7 @@ def add_defense_prediction_safety(image,leak_fix=True,null_guard=True,log=print)
     if OV_RAM+len(image)>EXT_LIMIT:raise ValueError("defense prediction extension exceeds RAM allocation")
     return bytes(image)
 
-def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card=True,merge="all",subpos_fix=False,pennant_fix=True,pop_unlock=True,read_split=True,read_code_fix=True,read_sep=True,straight_together=False,read_lv=None,defense_guard=True,defense_leak_fix=True,defense_null_guard=True,pennant_relief=False,pennant_starter_fallback=False,pennant_starter_priority=False):
+def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card=True,merge="all",subpos_fix=False,pennant_fix=True,pop_unlock=True,read_split=True,read_code_fix=True,read_sep=True,straight_together=False,read_lv=None,defense_guard=True,defense_leak_fix=True,defense_null_guard=True,pennant_relief=False,pennant_starter_fallback=False,pennant_starter_priority=False,runner_null_guard=True):
     if Path(src).resolve()==Path(dst).resolve(): raise ValueError("input and output must differ")
     rom=bytearray(Path(src).read_bytes()); sha=hashlib.sha1(rom).hexdigest()
     orig_hdr_crc=struct.unpack_from("<H",rom,0x15E)[0]   # v26e: 0x757E for the clean ROM
@@ -970,7 +997,8 @@ def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card
     rs=patch_read_split(rom,log) if read_split else None
     hc=patch_read_code_fix(rom,log) if read_code_fix else None
     sep=patch_read_sep(rom,log) if read_sep else None
-    ov10final=(sep[0] if sep else None) or (hc[0] if hc else None) or (rs[0] if rs else None) or pop or (starter_priority[0] if starter_priority else None) or (starter_fallback[0] if starter_fallback else None) or (relief[0] if relief else None) or (pen[0] if pen else None) or cardp or d1
+    runnerguard=patch_runner_null_guard(rom,log) if runner_null_guard else None
+    ov10final=(runnerguard if runnerguard else None) or (sep[0] if sep else None) or (hc[0] if hc else None) or (rs[0] if rs else None) or pop or (runnerguard if runnerguard else None) or (starter_priority[0] if starter_priority else None) or (starter_fallback[0] if starter_fallback else None) or (relief[0] if relief else None) or (pen[0] if pen else None) or cardp or d1
     ov15final=(sep[1] if sep else None) or (hc[1] if hc else None) or (rs[1] if rs else None)
     keep_header_crc(rom,orig_hdr_crc,log)   # v26e
     Path(dst).write_bytes(rom)
@@ -1133,7 +1161,7 @@ def gui():
         p=filedialog.askopenfilename(filetypes=[("JSON","*.json")])
         if p: set_cfg(json.loads(Path(p).read_text(encoding="utf-8"))); log("loaded "+p)
     def run():
-        try: build(src.get(),dst.get(),get_cfg(),log=log,cpu=cpu_var.get(),scroll=scroll_var.get(),pages=pages_var.get(),card=card_var.get(),merge={"しない":"off","◎と○の統合だけ止める":"upgrade","すべての統合を止める":"all"}[merge_var.get()],subpos_fix=subpos_var.get(),pennant_fix=pen_var.get(),pop_unlock=pop_var.get(),read_split=rs_var.get(),read_code_fix=hc_var.get(),read_sep=sep_var.get(),straight_together=not sepst_var.get(),read_lv=lv_var.get(),defense_guard=defguard_var.get(),defense_leak_fix=defleak_var.get(),defense_null_guard=defnull_var.get(),pennant_relief=relief_var.get(),pennant_starter_fallback=starter_fallback_var.get(),pennant_starter_priority=starter_priority_var.get()); messagebox.showinfo("完了","パッチ済みROMを作成しました")
+        try: build(src.get(),dst.get(),get_cfg(),log=log,cpu=cpu_var.get(),scroll=scroll_var.get(),pages=pages_var.get(),card=card_var.get(),merge={"しない":"off","◎と○の統合だけ止める":"upgrade","すべての統合を止める":"all"}[merge_var.get()],subpos_fix=subpos_var.get(),pennant_fix=pen_var.get(),pop_unlock=pop_var.get(),read_split=rs_var.get(),read_code_fix=hc_var.get(),read_sep=sep_var.get(),straight_together=not sepst_var.get(),read_lv=lv_var.get(),defense_guard=defguard_var.get(),defense_leak_fix=defleak_var.get(),defense_null_guard=defnull_var.get(),pennant_relief=relief_var.get(),pennant_starter_fallback=starter_fallback_var.get(),pennant_starter_priority=starter_priority_var.get(),runner_null_guard=runner_null_var.get()); messagebox.showinfo("完了","パッチ済みROMを作成しました")
         except Exception as e: log("ERROR: "+str(e)); messagebox.showerror("エラー",str(e))
     cpu_var=tk.BooleanVar(value=True); rs_var=tk.BooleanVar(value=False)
     sep_var=tk.BooleanVar(value=True); sepst_var=tk.BooleanVar(value=True); hc_var=tk.BooleanVar(value=True)
@@ -1169,6 +1197,8 @@ def gui():
     ttk.Checkbutton(bot,text="オーペナ: 先発6枠も救援候補の状態値40超判定を使用",variable=starter_fallback_var).grid(row=17,column=0,columnspan=3,sticky="w")
     starter_priority_var=tk.BooleanVar(value=False)
     ttk.Checkbutton(bot,text="オーペナ: 先発投手の救援候補即時確定",variable=starter_priority_var).grid(row=18,column=0,columnspan=3,sticky="w")
+    runner_null_var=tk.BooleanVar(value=True)
+    ttk.Checkbutton(bot,text="アクション野球: 走者記録NULL参照クラッシュ対策",variable=runner_null_var).grid(row=20,column=0,columnspan=3,sticky="w")
     pen_var=tk.BooleanVar(value=True)
     ttk.Checkbutton(bot,text="ペナント: セーブ後にアレンジチームの選手が入れ替わるバグを修正",variable=pen_var).grid(row=10,column=0,columnspan=3,sticky="w")
     ttk.Checkbutton(bot,text="打者の読みの修正（原作バグ修正: 投球履歴の番号の取り違え＋オーペナのサインバレ）",variable=hc_var,command=_dep).grid(row=11,column=0,columnspan=3,sticky="w")
@@ -1226,6 +1256,7 @@ if __name__=="__main__":
     ap.add_argument("--edition",choices=["normal","max"],help="initial sets when no --config is given (default: this file's EDITION)")
     ap.add_argument("--no-read-fix",action="store_true",help="keep the retail batter-read bugs (ID/code history mix-up, auto-pennant sign stealing); the fix is ON by default")
     ap.add_argument("--read-code-fix",action="store_true",help=argparse.SUPPRESS)   # v29 flag: accepted, now the default
+    ap.add_argument("--no-runner-null-guard",action="store_true",help="disable runner-record NULL guard (default ON)")
     ap.add_argument("--pennant-starter-priority",action="store_true",help="auto-pennant: finalize the first eligible starter relief candidate immediately (default OFF; no next-start protection)")
     ap.add_argument("--pennant-starter-fallback",action="store_true",help="auto-pennant: let starters use the >40 relief candidate fallback (default OFF)")
     ap.add_argument("--pennant-relief",action="store_true",help="auto-pennant: remove top-three starter relief candidate gate in search and count (default OFF)")
@@ -1236,5 +1267,5 @@ if __name__=="__main__":
     ap.add_argument("--scroll",action="store_true",help=argparse.SUPPRESS)
     a=ap.parse_args()
     cfg=json.loads(Path(a.config).read_text(encoding="utf-8")) if a.config else default_cfg(a.edition)
-    try: build(a.input_rom,a.output_rom,cfg,a.force,cpu=not a.no_cpu,scroll=not a.no_scroll,pages=not a.no_pages,card=not a.no_card,merge=a.merge,subpos_fix=a.subpos_fix,pennant_fix=not a.no_pennant_fix,pop_unlock=not a.no_pop_unlock,read_split=not a.no_read_split,read_code_fix=not a.no_read_fix,read_sep=not a.no_read_sep,straight_together=a.straight_together,read_lv=a.read_lv,defense_guard=not a.no_defense_guard,defense_leak_fix=not a.no_defense_leak_fix,defense_null_guard=not a.no_defense_null_guard,pennant_relief=a.pennant_relief,pennant_starter_fallback=a.pennant_starter_fallback,pennant_starter_priority=a.pennant_starter_priority)
+    try: build(a.input_rom,a.output_rom,cfg,a.force,cpu=not a.no_cpu,scroll=not a.no_scroll,pages=not a.no_pages,card=not a.no_card,merge=a.merge,subpos_fix=a.subpos_fix,pennant_fix=not a.no_pennant_fix,pop_unlock=not a.no_pop_unlock,read_split=not a.no_read_split,read_code_fix=not a.no_read_fix,read_sep=not a.no_read_sep,straight_together=a.straight_together,read_lv=a.read_lv,defense_guard=not a.no_defense_guard,defense_leak_fix=not a.no_defense_leak_fix,defense_null_guard=not a.no_defense_null_guard,pennant_relief=a.pennant_relief,pennant_starter_fallback=a.pennant_starter_fallback,pennant_starter_priority=a.pennant_starter_priority,runner_null_guard=not a.no_runner_null_guard)
     except ValueError as e: raise SystemExit(str(e))
