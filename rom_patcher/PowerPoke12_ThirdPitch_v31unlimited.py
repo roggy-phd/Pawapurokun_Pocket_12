@@ -906,6 +906,32 @@ def patch_read_sep(rom,log=print):
     r15=_ov_patch(rom,OV15_ID,OV15_RAM,OV15_SIZE,hooks,log,"read separate")
     return r10,r15
 
+
+# --- v31: independent gyroball read identity (default ON; OFF retains previous v31 behavior) ---
+# Older v29 read-split code cave is free whenever v31 read-separate is active.
+# The normal slot codes 5/12 acquire gyro ID 24 + stored Lv; added straights whose
+# ID changed 5->24 keep their extra identity. The same key is consumed by
+# UaHitChk, the result handlers, and history via v31's existing rec_num hooks.
+GYRO_READ_CAVE=RS_STUB
+GYRO_READ_MATCH=RS_STUB
+GYRO_READ_FALLBACK=RS_STUB+0x14
+GYRO_READ_CODE=bytes.fromhex("01005ce11eff2f0118005ce3050051031eff2fe100c0d2e518005ce300c0a0111eff2f11050050e30c00501300c0a0111eff2f1130109fe50010d1e5000051e338c0a0031eff2f0120109fe5001091e5081091e5050050e30e10d1050f10d115e01001e218c081e31eff2fe1112619020c0f0d02")
+GYRO_READ_CAVE_EXPECTED=bytes.fromhex("5245434f52445f5350313453454e5348555f50444154415f530000005f5a31325374616d696e6146756c6c5050313453454e5348555f50444154415f530000005f5a31354e50656e615072654461746153657476000000005f5a31374e50656e61507265446174615f73756231503130425f5245")
+GYRO_READ_MATCH_SITE=OV10X+0x270
+GYRO_READ_FALLBACK_SITE=OV10X+0x2E8
+GYRO_READ_MATCH_ORIG=bytes.fromhex("01005ce1")  # cmp ip,r1
+GYRO_READ_FALLBACK_ORIG=bytes.fromhex("00c0a0e1")  # mov ip,r0
+
+def patch_gyro_independent_read(rom,log=print):
+    """Independent gyro 0x18 identity, with stored Lv where read-lv is ON."""
+    if len(GYRO_READ_CODE)>HC_STUB-GYRO_READ_CAVE:
+        raise ValueError("gyro read helper exceeds the retired read-split cave")
+    return _ov_patch(rom,OV10_ID,OV10_RAM,OV10_SIZE,[
+        (GYRO_READ_CAVE,GYRO_READ_CAVE_EXPECTED,GYRO_READ_CODE),
+        (GYRO_READ_MATCH_SITE,GYRO_READ_MATCH_ORIG,arm_b(GYRO_READ_MATCH_SITE,GYRO_READ_MATCH,True)),
+        (GYRO_READ_FALLBACK_SITE,GYRO_READ_FALLBACK_ORIG,arm_b(GYRO_READ_FALLBACK_SITE,GYRO_READ_FALLBACK,True)),
+    ],log,"gyro independent batter read")
+
 def keep_header_crc(rom,target,log=print):
     """v26e: nds-bootstrap looks up per-game fixes by TID + header CRC (apFix/VPTJ-757E.ips = anti-piracy
     fix for PowerPoke 12). When the header changes (ARM9 size / secure-area CRC), the CRC changes, the AP fix
@@ -1074,7 +1100,7 @@ def add_defense_prediction_safety(image,leak_fix=True,null_guard=True,log=print)
     if OV_RAM+len(image)>EXT_LIMIT:raise ValueError("defense prediction extension exceeds RAM allocation")
     return bytes(image)
 
-def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card=True,merge="all",subpos_fix=False,pennant_fix=True,pop_unlock=True,read_split=True,read_code_fix=True,read_sep=True,straight_together=False,read_lv=None,defense_guard=True,defense_leak_fix=True,defense_null_guard=True,pennant_relief=True,pennant_starter_fallback=False,pennant_starter_priority=True,runner_null_guard=True,runner_owner_fix=True,second_strength=True,control_slot2=True,batjudge_slot2=True,stamina_orig=True,gyro_by_id=True):
+def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card=True,merge="all",subpos_fix=False,pennant_fix=True,pop_unlock=True,read_split=True,read_code_fix=True,read_sep=True,straight_together=False,read_lv=None,defense_guard=True,defense_leak_fix=True,defense_null_guard=True,pennant_relief=True,pennant_starter_fallback=False,pennant_starter_priority=True,runner_null_guard=True,runner_owner_fix=True,second_strength=True,control_slot2=True,batjudge_slot2=True,stamina_orig=True,gyro_by_id=True,gyro_independent_read=True):
     if Path(src).resolve()==Path(dst).resolve(): raise ValueError("input and output must differ")
     rom=bytearray(Path(src).read_bytes()); sha=hashlib.sha1(rom).hexdigest()
     orig_hdr_crc=struct.unpack_from("<H",rom,0x15E)[0]   # v26e: 0x757E for the clean ROM
@@ -1133,6 +1159,10 @@ def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card
     rs=patch_read_split(rom,log) if read_split else None
     hc=patch_read_code_fix(rom,log) if read_code_fix else None
     sep=patch_read_sep(rom,log) if read_sep else None
+    if gyro_independent_read and not read_sep:
+        log("Gyro independent read: skipped (requires CPU extras and v31 independent read)")
+        gyro_independent_read=False
+    readgyro=patch_gyro_independent_read(rom,log) if gyro_independent_read else None
     runnerguard=patch_runner_null_guard(rom,log) if runner_null_guard else None
     ownerfix=patch_runner_owner_fix(rom,log) if runner_owner_fix else None
     secondfix=patch_ov10_second_strength(rom,log) if second_strength else None
@@ -1140,7 +1170,7 @@ def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card
     batj2=patch_batjudge_slot2(rom,log) if batjudge_slot2 else None
     stam2=patch_stamina_orig(rom,log) if stamina_orig else None
     gyro=patch_gyro_by_id(rom,log) if gyro_by_id else None
-    ov10final=(gyro if gyro else None) or (stam2 if stam2 else None) or (batj2[0] if batj2 else None) or (ctrl2 if ctrl2 else None) or (secondfix if secondfix else None) or (ownerfix if ownerfix else None) or (runnerguard if runnerguard else None) or (sep[0] if sep else None) or (hc[0] if hc else None) or (rs[0] if rs else None) or pop or (runnerguard if runnerguard else None) or (starter_priority[0] if starter_priority else None) or (starter_fallback[0] if starter_fallback else None) or (relief[0] if relief else None) or (pen[0] if pen else None) or cardp or d1
+    ov10final=(gyro if gyro else None) or (stam2 if stam2 else None) or (batj2[0] if batj2 else None) or (ctrl2 if ctrl2 else None) or (secondfix if secondfix else None) or (ownerfix if ownerfix else None) or (runnerguard if runnerguard else None) or (readgyro if readgyro else None) or (sep[0] if sep else None) or (hc[0] if hc else None) or (rs[0] if rs else None) or pop or (runnerguard if runnerguard else None) or (starter_priority[0] if starter_priority else None) or (starter_fallback[0] if starter_fallback else None) or (relief[0] if relief else None) or (pen[0] if pen else None) or cardp or d1
     ov15final=(batj2[1] if batj2 else None) or (sep[1] if sep else None) or (hc[1] if hc else None) or (rs[1] if rs else None)
     keep_header_crc(rom,orig_hdr_crc,log)   # v26e
     Path(dst).write_bytes(rom)
@@ -1154,6 +1184,7 @@ def build(src,dst,cfg,force=False,log=print,cpu=True,scroll=True,pages=True,card
     if ov15final:
         a,b=struct.unpack_from("<II",chk,fat+ov15final[0]*8)
         if blz_decompress(chk[a:b])!=ov15final[1]: Path(dst).unlink(); raise ValueError("ov15 verification failed")
+    if readgyro: log("Auto-pennant gyro read: independent ID24 / stored Lv (default ON)")
     if sep: log(f"Auto-pennant read: extras are separate pitches by {'pitch type + Lv' if read_lv else 'pitch type'}; straight-family extras {'read as the straight' if straight_together else 'separate too'}")
     if rs: log(f"Auto-pennant read split for third pitches: ON (ov15 0x021A7764/0x021A7790 -> ov10 0x{RS_STUB:08X})")
     if hc: log(f"Batter-read fix: ON (history code: ov15 0x021A3904/0x021A4704 + ov3 0x020E4F48 -> 0x{HC_STUB:08X}; no sign stealing: 0x021A705C/0x021A6AB4)")
@@ -1303,7 +1334,7 @@ def gui():
         p=filedialog.askopenfilename(filetypes=[("JSON","*.json")])
         if p: set_cfg(json.loads(Path(p).read_text(encoding="utf-8"))); log("loaded "+p)
     def run():
-        try: build(src.get(),dst.get(),get_cfg(),log=log,cpu=cpu_var.get(),scroll=scroll_var.get(),pages=pages_var.get(),card=card_var.get(),merge={"しない":"off","◎と○の統合だけ止める":"upgrade","すべての統合を止める":"all"}[merge_var.get()],subpos_fix=subpos_var.get(),pennant_fix=pen_var.get(),pop_unlock=pop_var.get(),read_split=rs_var.get(),read_code_fix=hc_var.get(),read_sep=sep_var.get(),straight_together=not sepst_var.get(),read_lv=lv_var.get(),defense_guard=defguard_var.get(),defense_leak_fix=defleak_var.get(),defense_null_guard=defnull_var.get(),pennant_relief=relief_var.get(),pennant_starter_fallback=starter_fallback_var.get(),pennant_starter_priority=starter_priority_var.get(),runner_null_guard=runner_null_var.get(),runner_owner_fix=runner_owner_var.get(),second_strength=second_strength_var.get(),control_slot2=control_slot2_var.get(),batjudge_slot2=batjudge_slot2_var.get(),stamina_orig=stamina_orig_var.get(),gyro_by_id=gyro_by_id_var.get()); messagebox.showinfo("完了","パッチ済みROMを作成しました")
+        try: build(src.get(),dst.get(),get_cfg(),log=log,cpu=cpu_var.get(),scroll=scroll_var.get(),pages=pages_var.get(),card=card_var.get(),merge={"しない":"off","◎と○の統合だけ止める":"upgrade","すべての統合を止める":"all"}[merge_var.get()],subpos_fix=subpos_var.get(),pennant_fix=pen_var.get(),pop_unlock=pop_var.get(),read_split=rs_var.get(),read_code_fix=hc_var.get(),read_sep=sep_var.get(),straight_together=not sepst_var.get(),read_lv=lv_var.get(),defense_guard=defguard_var.get(),defense_leak_fix=defleak_var.get(),defense_null_guard=defnull_var.get(),pennant_relief=relief_var.get(),pennant_starter_fallback=starter_fallback_var.get(),pennant_starter_priority=starter_priority_var.get(),runner_null_guard=runner_null_var.get(),runner_owner_fix=runner_owner_var.get(),second_strength=second_strength_var.get(),control_slot2=control_slot2_var.get(),batjudge_slot2=batjudge_slot2_var.get(),stamina_orig=stamina_orig_var.get(),gyro_by_id=gyro_by_id_var.get(),gyro_independent_read=gyro_read_var.get()); messagebox.showinfo("完了","パッチ済みROMを作成しました")
         except Exception as e: log("ERROR: "+str(e)); messagebox.showerror("エラー",str(e))
     cpu_var=tk.BooleanVar(value=True); rs_var=tk.BooleanVar(value=False)
     sep_var=tk.BooleanVar(value=True); sepst_var=tk.BooleanVar(value=True); hc_var=tk.BooleanVar(value=True)
@@ -1340,6 +1371,7 @@ def gui():
     starter_priority_var=tk.BooleanVar(value=True)
     ttk.Checkbutton(bot,text="オーペナ: 先発投手の救援候補即時確定",variable=starter_priority_var).grid(row=17,column=0,columnspan=3,sticky="w")
     gyro_by_id_var=tk.BooleanVar(value=True)
+    gyro_read_var=tk.BooleanVar(value=True)
     stamina_orig_var=tk.BooleanVar(value=True)
     control_slot2_var=tk.BooleanVar(value=True)
     batjudge_slot2_var=tk.BooleanVar(value=True)
@@ -1353,6 +1385,7 @@ def gui():
     ttk.Checkbutton(bot,text="オーペナ: 打撃判定の補正3か所が第2球種枠に掛からないバグを修正",variable=batjudge_slot2_var).grid(row=24,column=0,columnspan=3,sticky="w")
     ttk.Checkbutton(bot,text="オーペナ: オリジナル変化球のスタミナ消費が別球種の値で計算されるバグを修正",variable=stamina_orig_var).grid(row=25,column=0,columnspan=3,sticky="w")
     ttk.Checkbutton(bot,text="オーペナ/アクション: ジャイロボールの発動判定を球種そのもの（ストレート）で行う（第2枠・追加球種のストレートも対象に）",variable=gyro_by_id_var).grid(row=26,column=0,columnspan=3,sticky="w")
+    ttk.Checkbutton(bot,text="オーペナ: ジャイロを独立球種ID24として読み、通常枠・追加枠ともLv別に判定（既定ON）",variable=gyro_read_var).grid(row=27,column=0,columnspan=3,sticky="w")
     pen_var=tk.BooleanVar(value=True)
     ttk.Checkbutton(bot,text="ペナント: セーブ後にアレンジチームの選手が入れ替わるバグを修正",variable=pen_var).grid(row=10,column=0,columnspan=3,sticky="w")
     ttk.Checkbutton(bot,text="打者の読みの修正（原作バグ修正: 投球履歴の番号の取り違え＋オーペナのサインバレ）",variable=hc_var,command=_dep).grid(row=11,column=0,columnspan=3,sticky="w")
@@ -1396,6 +1429,7 @@ if __name__=="__main__":
     ap.add_argument("--edition",choices=["normal","max"],help="initial sets when no --config is given (default: this file's EDITION)")
     ap.add_argument("--no-read-fix",action="store_true",help="keep the retail batter-read bugs (ID/code history mix-up, auto-pennant sign stealing); the fix is ON by default")
     ap.add_argument("--read-code-fix",action="store_true",help=argparse.SUPPRESS)   # v29 flag: accepted, now the default
+    ap.add_argument("--no-gyro-read",action="store_true",help="disable independent gyro ID24 (+ Lv when read-lv ON) for auto-pennant (default ON)")
     ap.add_argument("--no-gyro-by-id",action="store_true",help="disable: trigger the gyroball conversion on the pitch ID instead of the 1st-slot code (default ON)")
     ap.add_argument("--no-stamina-orig",action="store_true",help="disable: charge an original breaking ball the stamina cost of its base pitch (default ON)")
     ap.add_argument("--no-control-slot2",action="store_true",help="disable: apply the fork/sinker control penalty to 2nd-slot pitches (default ON)")
@@ -1413,5 +1447,5 @@ if __name__=="__main__":
     ap.add_argument("--scroll",action="store_true",help=argparse.SUPPRESS)
     a=ap.parse_args()
     cfg=json.loads(Path(a.config).read_text(encoding="utf-8")) if a.config else default_cfg(a.edition)
-    try: build(a.input_rom,a.output_rom,cfg,a.force,cpu=not a.no_cpu,scroll=not a.no_scroll,pages=not a.no_pages,card=not a.no_card,merge=a.merge,subpos_fix=a.subpos_fix,pennant_fix=not a.no_pennant_fix,pop_unlock=not a.no_pop_unlock,read_split=not a.no_read_split,read_code_fix=not a.no_read_fix,read_sep=not a.no_read_sep,straight_together=a.straight_together,read_lv=a.read_lv,defense_guard=not a.no_defense_guard,defense_leak_fix=not a.no_defense_leak_fix,defense_null_guard=not a.no_defense_null_guard,pennant_relief=a.pennant_relief,pennant_starter_fallback=a.pennant_starter_fallback,pennant_starter_priority=a.pennant_starter_priority,runner_null_guard=not a.no_runner_null_guard,runner_owner_fix=not a.no_runner_owner_fix,second_strength=not a.no_second_strength,control_slot2=not a.no_control_slot2,batjudge_slot2=not a.no_batjudge_slot2,stamina_orig=not a.no_stamina_orig,gyro_by_id=not a.no_gyro_by_id)
+    try: build(a.input_rom,a.output_rom,cfg,a.force,cpu=not a.no_cpu,scroll=not a.no_scroll,pages=not a.no_pages,card=not a.no_card,merge=a.merge,subpos_fix=a.subpos_fix,pennant_fix=not a.no_pennant_fix,pop_unlock=not a.no_pop_unlock,read_split=not a.no_read_split,read_code_fix=not a.no_read_fix,read_sep=not a.no_read_sep,straight_together=a.straight_together,read_lv=a.read_lv,defense_guard=not a.no_defense_guard,defense_leak_fix=not a.no_defense_leak_fix,defense_null_guard=not a.no_defense_null_guard,pennant_relief=a.pennant_relief,pennant_starter_fallback=a.pennant_starter_fallback,pennant_starter_priority=a.pennant_starter_priority,runner_null_guard=not a.no_runner_null_guard,runner_owner_fix=not a.no_runner_owner_fix,second_strength=not a.no_second_strength,control_slot2=not a.no_control_slot2,batjudge_slot2=not a.no_batjudge_slot2,stamina_orig=not a.no_stamina_orig,gyro_by_id=not a.no_gyro_by_id,gyro_independent_read=not a.no_gyro_read)
     except ValueError as e: raise SystemExit(str(e))
