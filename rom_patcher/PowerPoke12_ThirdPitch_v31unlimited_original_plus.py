@@ -218,7 +218,7 @@ EDITION="max"   # "max" for the max edition (only the initial sets differ)
 # entries in the straight family, matching the recommended configuration.  The runtime
 # direction guard skips them for any pitcher whose original is not in that family.
 DEFAULT_MAX={**DEFAULT,"F":{CATS[c]:[[p,lv] for p in PITCHES[c] for lv in range(7,0,-1)] for c in range(6)}}
-DEFAULT_MAX["F"][CATS[5]]=DEFAULT_MAX["F"][CATS[5]]+[[ORIG,lv] for lv in range(1,ORIG_MAX+1)]
+DEFAULT_MAX["F"][CATS[5]]=DEFAULT_MAX["F"][CATS[5]]+[[ORIG,lv] for lv in range(ORIG_MAX,0,-1)]
 def default_cfg(edition=None):
     return DEFAULT_MAX if (edition or EDITION)=="max" else DEFAULT
 def cfg_lists(cfg):
